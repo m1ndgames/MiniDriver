@@ -1,0 +1,69 @@
+# Copy to config.yaml and edit. The real config.yaml is gitignored and lives at
+# /etc/minidriver/config.yaml (0600) on the box. Anything left out falls back to
+# a built-in default, so you only need to write what you want to change.
+
+network:
+  # The onboard 2.4 GHz radio. The daemon owns it directly: it scans in the field
+  # and joins one of the home networks below when one is in range. There is no
+  # second radio and no monitor mode -- capture is an active scan.
+  interface: wlan0
+  # Regulatory domain. Decides channel availability and legal transmit power.
+  country: DE
+  # REQUIRED on a box you reach over WiFi. The daemon takes wlan0 off
+  # NetworkManager and parks it unassociated to scan, so these entries are the
+  # only way it ever puts the box back on the network. Leave this empty and the
+  # box cannot come home at all -- minidriver-recover.timer notices within a few
+  # minutes and hands wlan0 back to NetworkManager rather than leaving you
+  # locked out. The `ssid` must match exactly, byte for byte.
+  #
+  # When any of these is in range the box leaves the field, associates, becomes
+  # reachable over LAN SSH, and uploads. `psk` is the passphrase. To keep the
+  # passphrase off the box entirely, precompute the key instead:
+  #     python3 -m minidriver.psk <ssid>
+  # and paste the `psk_hash` line it prints. Either way this file holds a secret
+  # (the derived key grants network access too), so it stays 0600.
+  home_networks: []
+  #  - ssid: my-home-wifi
+  #    psk: "the passphrase"
+  #    priority: 10
+  #  - ssid: my-phone-hotspot
+  #    psk_hash: "64 hex characters"
+  #    priority: 1
+  #  - ssid: a-hidden-network
+  #    psk: "the passphrase"
+  #    hidden: true
+
+services:
+  # None of these can be hashed -- each API needs the literal value. They are
+  # protected by this file being 0600 and by never being logged. Leave a service
+  # blank to not upload to it.
+  wigle_token: ""          # the "Encoded for use" value from your WiGLE account
+  wdgwars_key: ""          # 64-character key from your WDGWars profile
+  wardrift_username: ""    # wardrift.net signs in with these to upload
+  wardrift_password: ""
+
+scan:
+  # Seconds between active scans while driving.
+  field_scan_seconds: 3.0
+  # A home network must be seen in this many scans in a row before the box leaves
+  # the field -- one stray beacon off a passing car should not end a drive.
+  home_confirm_scans: 2
+  # ...and must be missing this many scans running before the box gives up on it
+  # and goes back to scanning.
+  home_lost_checks: 3
+
+ble:
+  # Scan Bluetooth LE advertisements on the internal radio and fold them into the
+  # same survey. false makes the box WiFi-only.
+  enabled: true
+
+display:
+  # 0 / 90 / 180 / 270, depending on how the case mounts the panel.
+  rotate: 0
+  # Seconds between panel redraws. E-paper wears with every refresh, so status is
+  # redrawn on a cadence rather than on every change.
+  refresh_seconds: 30.0
+
+paths:
+  data_dir: /var/lib/minidriver
+  log_dir: /var/log/minidriver

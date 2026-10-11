@@ -1,0 +1,14 @@
+[Unit]
+Description=Check that MiniDriver has not stranded the box off the network
+
+[Timer]
+# First check a few minutes after boot, then every five. The daemon needs only a
+# couple of scans (~6s) to recognise a home network and associate, so by the
+# time a check runs a healthy box is long since reachable.
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=minidriver-recover.service
+
+[Install]
+WantedBy=timers.target

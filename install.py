@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Install MiniDriver as a system service on Raspberry Pi OS.
+
+    sudo python3 install.py
+
+Idempotent: safe to re-run to deploy a new version. An existing
+/etc/minidriver/config.yaml is never overwritten -- it is the operator's file,
+holding the WiFi keys and service tokens.
+
+What it does:
+  1. apt dependencies (iw, wpa_supplicant, a DHCP client, gpsd, bluez, the
+     e-paper Python stack).
+  2. Boot config: enable the UART, keep Bluetooth but move it to the mini-UART so
+     the GPS HAT gets the stable PL011 UART, enable SPI for the panel, and take
+     the login console off the serial port.
+  3. wlan0 ownership: leave the interface with NetworkManager -- the daemon now
+     claims the radio at runtime, which a power cycle undoes -- and delete the
+     persistent "unmanaged" drop-in older versions wrote, which could strand a
+     WiFi-only box for good. Mask ModemManager so it cannot grab the GPS serial
+     device.
+  4. Point gpsd at the GPS (works for both the L76K HAT on /dev/serial0 and a USB
+     dongle via USBAUTO).
+  5. Install the code to /opt/minidriver in a venv, seed the config, and install
+     the systemd units: the daemon plus minidriver-recover.timer, the watchdog
+     that hands wlan0 back if the daemon ever fails to get the box home.
+
+Step 2 changes kernel/boot settings, so a reboot is needed afterwards.
+"""
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from minidriver.provision import ensure_lines, serial_console_off
+
+PREFIX = Path("/opt/minidriver")
+CONFIG_DIR = Path("/etc/minidriver")
+UNIT_DIR = Path("/etc/systemd/system")
+UNITS = ("minidriver.service", "minidriver-recover.service",
+         "minidriver-recover.timer")
+SRC = Path(__file__).resolve().parent
+
+APT_PACKAGES = [
+    "iw", "wpasupplicant", "isc-dhcp-client", "gpsd", "gpsd-clients",
+    "bluez", "python3-dbus", "python3-pil", "python3-numpy",
+    "python3-spidev", "python3-lgpio", "python3-bleak", "python3-yaml",
+]
+
+BOOT_LINES = [
+    "enable_uart=1",
+    "dtoverlay=miniuart-bt",
+    "dtparam=spi=on",
+]
+
+
+def run(argv, **kw):
+    print("    $", " ".join(argv))
+    return subprocess.run(argv, **kw)
+
+
+def need_root():
+    if os.geteuid() != 0:
+        sys.exit("run as root: sudo python3 install.py")
+
+
+def boot_dir() -> Path:
+    """Bookworm moved the boot partition to /boot/firmware; fall back to /boot."""
+    firmware = Path("/boot/firmware")
+    return firmware if firmware.is_dir() else Path("/boot")
+
+
+def edit_boot():
+    boot = boot_dir()
+    config = boot / "config.txt"
+    if config.is_file():
+        new, changed = ensure_lines(config.read_text(), BOOT_LINES)
+        if changed:
+            config.write_text(new)
+            print(f"    updated {config}")
+        else:
+            print(f"    {config} already set")
+    else:
+        print(f"    !! {config} not found; set {BOOT_LINES} by hand")
+
+    cmdline = boot / "cmdline.txt"
+    if cmdline.is_file():
+        new, changed = serial_console_off(cmdline.read_text().strip())
+        if changed:
+            cmdline.write_text(new + "\n")
+            print(f"    took the serial console off {cmdline}")
+        else:
+            print(f"    {cmdline} already free of a serial console")
+
+
+LEGACY_UNMANAGED = Path(
+    "/etc/NetworkManager/conf.d/10-minidriver-unmanaged.conf")
+
+
+def drop_legacy_unmanaged():
+    """Remove the persistent "wlan0 is unmanaged" drop-in earlier versions wrote.
+
+    That file is why a box could strand itself for good: it survives reboots, so
+    once the daemon failed to associate there was no route back in at all. The
+    daemon now takes the radio at runtime instead (minidriver.nm), which a power
+    cycle undoes. Deleting it here is what repairs an already-bricked card.
+    """
+    if LEGACY_UNMANAGED.exists():
+        LEGACY_UNMANAGED.unlink()
+        print(f"    removed {LEGACY_UNMANAGED} (it could strand the box)")
+        if shutil.which("systemctl"):
+            run(["systemctl", "restart", "NetworkManager"], capture_output=True)
+    else:
+        print("    no persistent unmanaged drop-in; NetworkManager keeps wlan0"
+              " until the daemon asks for it")
+
+
+def mask_modemmanager():
+    """ModemManager probes serial devices on plug-in and can seize the GPS port.
+    This box has no cellular modem, so masking it is the clean fix."""
+    if shutil.which("systemctl"):
+        run(["systemctl", "disable", "--now", "ModemManager"],
+            capture_output=True)
+        run(["systemctl", "mask", "ModemManager"], capture_output=True)
+
+
+def configure_gpsd():
+    defaults = Path("/etc/default/gpsd")
+    defaults.write_text(
+        "# Managed by minidriver install.\n"
+        '# The L76K HAT is on /dev/serial0; USBAUTO picks up a USB dongle too.\n'
+        'DEVICES="/dev/serial0"\n'
+        'USBAUTO="true"\n'
+        'GPSD_OPTIONS="-n"\n'
+        'START_DAEMON="true"\n')
+    print(f"    wrote {defaults}")
+    if shutil.which("systemctl"):
+        run(["systemctl", "enable", "gpsd.socket"], capture_output=True)
+        run(["systemctl", "restart", "gpsd.socket"], capture_output=True)
+
+
+def apt_install():
+    run(["apt-get", "update"], check=False)
+    run(["apt-get", "install", "-y", *APT_PACKAGES], check=False)
+
+
+def install_code():
+    PREFIX.mkdir(parents=True, exist_ok=True)
+    for item in ("minidriver", "pyproject.toml"):
+        dest = PREFIX / item
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        elif dest.exists():
+            dest.unlink()
+        src = SRC / item
+        if src.is_dir():
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
+    print(f"    copied sources to {PREFIX}")
+
+    venv = PREFIX / ".venv"
+    if not (venv / "bin" / "python").exists():
+        # --system-site-packages: Pillow, spidev, lgpio, bleak and dbus come from
+        # the OS and must match the system libraries, so the venv borrows them.
+        run([sys.executable, "-m", "venv", "--system-site-packages", str(venv)],
+            check=True)
+    py = venv / "bin" / "python"
+    installed = run([str(py), "-m", "pip", "install", "--quiet", "-e", str(PREFIX)],
+                    capture_output=True)
+    if installed.returncode != 0:
+        # A box on a hotspot may have no package index. The only thing missing is
+        # our own package on the path; a .pth provides it with no index at all.
+        site = subprocess.run(
+            [str(py), "-c", "import site; print(site.getsitepackages()[0])"],
+            capture_output=True, text=True).stdout.strip()
+        if site:
+            (Path(site) / "minidriver.pth").write_text(str(PREFIX) + "\n")
+            print("    no package index; put the source on the path instead")
+
+    # Confirm the package imports from the venv before we enable a service on it.
+    check = run([str(py), "-c", "import minidriver, yaml"], capture_output=True)
+    if check.returncode != 0:
+        sys.exit("    FAIL: the venv cannot import minidriver or yaml")
+    print("    ok: minidriver importable from the venv")
+
+
+def seed_config():
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    target = CONFIG_DIR / "config.yaml"
+    if target.exists():
+        print(f"    keeping existing {target}")
+    else:
+        shutil.copy2(SRC / "config.example.yaml", target)
+        print(f"    wrote {target} from the example")
+    target.chmod(0o600)   # it holds WiFi keys and service tokens
+
+
+def install_service():
+    for name in UNITS:
+        shutil.copy2(SRC / "deploy" / name, UNIT_DIR / name)
+        print(f"    installed {UNIT_DIR / name}")
+    if shutil.which("systemctl"):
+        run(["systemctl", "daemon-reload"])
+        run(["systemctl", "enable", "minidriver.service"])
+        # The recovery timer is what gets the box back when the daemon is the
+        # broken part, so it is enabled and started independently of it.
+        run(["systemctl", "enable", "--now", "minidriver-recover.timer"])
+
+
+def main() -> int:
+    need_root()
+    print("==> apt dependencies");       apt_install()
+    print("==> boot configuration");     edit_boot()
+    print("==> wlan0 ownership");        drop_legacy_unmanaged()
+    print("==> ModemManager");           mask_modemmanager()
+    print("==> gpsd");                    configure_gpsd()
+    print("==> code");                    install_code()
+    print("==> config");                 seed_config()
+    print("==> service");                install_service()
+    print()
+    print("installed. Edit /etc/minidriver/config.yaml (home WiFi + service")
+    print("tokens), then reboot to apply the UART/SPI/console changes:")
+    print("    sudo nano /etc/minidriver/config.yaml")
+    print("    sudo reboot")
+    print("After reboot:  journalctl -fu minidriver")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

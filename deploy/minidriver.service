@@ -1,0 +1,30 @@
+[Unit]
+Description=MiniDriver pocket wardriving survey
+# The daemon owns the radio; give it the network stack and gpsd first.
+Wants=network.target gpsd.service
+After=network.target gpsd.service NetworkManager.service
+
+[Service]
+Type=notify
+# The daemon takes wlan0 off NetworkManager to scan unassociated, so on a
+# WiFi-only box a daemon fault is the difference between reachable and gone.
+#
+# Restart=always is NOT the mitigation for that -- a restarted daemon re-runs
+# enter_field() and flushes the address again. The two things that actually get
+# the box back are ExecStopPost below (the radio returns however the process
+# died, including SIGKILL) and minidriver-recover.timer, which runs outside this
+# unit so a crash-looping or hung daemon cannot defeat it.
+Restart=always
+RestartSec=5
+WatchdogSec=120
+NotifyAccess=main
+
+ExecStart=/opt/minidriver/.venv/bin/python -m minidriver
+ExecStopPost=-/opt/minidriver/.venv/bin/python -m minidriver --release
+# Owns the radio and writes under /var/lib and /var/log: runs as root.
+User=root
+StateDirectory=minidriver
+LogsDirectory=minidriver
+
+[Install]
+WantedBy=multi-user.target

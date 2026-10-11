@@ -1,0 +1,11 @@
+[Unit]
+Description=MiniDriver stranded-box recovery check
+# Deliberately independent of minidriver.service: this is what gets the box back
+# when the daemon itself is the thing that is broken, so it must not be ordered
+# after it, bound to it, or stopped with it.
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/minidriver/.venv/bin/python -m minidriver.recover
+User=root

@@ -1,0 +1,13 @@
+# The operator's real config lives on the device and holds WiFi passphrases and
+# service tokens. Only the example is tracked.
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.idea/
