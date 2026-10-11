@@ -1,0 +1,31 @@
+[project]
+name = "minidriver"
+version = "0.1.0"
+description = "Wardriving in a pocket: a single-radio Raspberry Pi Zero 2 W survey box"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+# Hardware-facing runtime dependencies are deliberately NOT listed above. On the
+# device they come from the OS (apt), because:
+#   - Pillow (python3-pil), spidev (python3-spidev), lgpio (python3-lgpio) drive
+#     the SPI e-paper panel and must match the system libraries.
+#   - bleak talks to the system BlueZ over D-Bus (python3-dbus).
+#   - gpsd is read over its TCP socket, so no client library is needed at all.
+# install.py creates the venv with --system-site-packages for this reason. They
+# are listed as dev extras so host test runs can import the pure logic; every
+# hardware import in the package itself is lazy (inside the function that uses
+# it) so the testable logic imports cleanly on any OS.
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["minidriver"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
