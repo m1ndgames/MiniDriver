@@ -18,9 +18,11 @@ What it does:
      persistent "unmanaged" drop-in older versions wrote, which could strand a
      WiFi-only box for good. Mask ModemManager so it cannot grab the GPS serial
      device.
-  4. Point gpsd at the GPS (works for both the L76K HAT on /dev/serial0 and a USB
+  4. Make the journal persistent but capped, so a reboot stops erasing the only
+     evidence of why it rebooted.
+  5. Point gpsd at the GPS (works for both the L76K HAT on /dev/serial0 and a USB
      dongle via USBAUTO).
-  5. Install the code to /opt/minidriver in a venv, fetch the Waveshare panel
+  6. Install the code to /opt/minidriver in a venv, fetch the Waveshare panel
      driver (pinned; Waveshare ship it only in their git repo), seed the config,
      and install the systemd units: the daemon plus minidriver-recover.timer,
      the watchdog that hands wlan0 back if the daemon ever fails to get home.
@@ -202,6 +204,49 @@ def install_code():
     print("    ok: minidriver importable from the venv")
 
 
+# The 99- prefix is load-bearing, not decoration. journald applies drop-ins in
+# lexicographic order of filename across every config directory, and Raspberry
+# Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf. A
+# lower number loses to it and the setting silently does nothing.
+JOURNAL_DROP_IN = Path(
+    "/etc/systemd/journald.conf.d/99-minidriver-persistent.conf")
+
+JOURNAL_CONF = """\
+# Managed by minidriver install.
+[Journal]
+# Raspberry Pi OS ships Storage=volatile to spare the SD card, which means a
+# reboot destroys the log. This box reboots for reasons worth reading about --
+# a full tmpfs once starved systemd until the 1-minute hardware watchdog reset
+# the board, leaving nothing behind to explain it.
+Storage=persistent
+# The other half of that trade: the reason the distro default is volatile is to
+# keep writes off the SD card, so bound the volume rather than ignore it. A few
+# tens of megabytes still spans many boots of a single-purpose box.
+SystemMaxUse=64M
+SystemMaxFileSize=8M
+Compress=yes
+"""
+
+
+def configure_journal():
+    """Make the journal survive reboots, with a size cap to limit card wear."""
+    JOURNAL_DROP_IN.parent.mkdir(parents=True, exist_ok=True)
+    if JOURNAL_DROP_IN.is_file() and JOURNAL_DROP_IN.read_text() == JOURNAL_CONF:
+        print(f"    {JOURNAL_DROP_IN} already set")
+    else:
+        JOURNAL_DROP_IN.write_text(JOURNAL_CONF)
+        print(f"    wrote {JOURNAL_DROP_IN}")
+
+    if not shutil.which("systemctl"):
+        return
+    # journald only picks up the storage change on restart, and --flush is what
+    # moves what is already in /run onto the disk.
+    run(["systemd-tmpfiles", "--create", "--prefix", "/var/log/journal"],
+        capture_output=True)
+    run(["systemctl", "restart", "systemd-journald"], capture_output=True)
+    run(["journalctl", "--flush"], capture_output=True)
+
+
 def venv_python() -> Path:
     return PREFIX / ".venv" / "bin" / "python"
 
@@ -279,6 +324,7 @@ def main() -> int:
     print("==> boot configuration");     edit_boot()
     print("==> wlan0 ownership");        drop_legacy_unmanaged()
     print("==> ModemManager");           mask_modemmanager()
+    print("==> journal");                configure_journal()
     print("==> gpsd");                    configure_gpsd()
     print("==> code");                    install_code()
     print("==> e-paper driver");         install_epaper_driver()
