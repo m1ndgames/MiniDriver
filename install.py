@@ -20,9 +20,10 @@ What it does:
      device.
   4. Point gpsd at the GPS (works for both the L76K HAT on /dev/serial0 and a USB
      dongle via USBAUTO).
-  5. Install the code to /opt/minidriver in a venv, seed the config, and install
-     the systemd units: the daemon plus minidriver-recover.timer, the watchdog
-     that hands wlan0 back if the daemon ever fails to get the box home.
+  5. Install the code to /opt/minidriver in a venv, fetch the Waveshare panel
+     driver (pinned; Waveshare ship it only in their git repo), seed the config,
+     and install the systemd units: the daemon plus minidriver-recover.timer,
+     the watchdog that hands wlan0 back if the daemon ever fails to get home.
 
 Step 2 changes kernel/boot settings, so a reboot is needed afterwards.
 """
@@ -30,6 +31,8 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from minidriver.provision import ensure_lines, serial_console_off
@@ -44,8 +47,22 @@ SRC = Path(__file__).resolve().parent
 APT_PACKAGES = [
     "iw", "wpasupplicant", "isc-dhcp-client", "gpsd", "gpsd-clients",
     "bluez", "python3-dbus", "python3-pil", "python3-numpy",
-    "python3-spidev", "python3-lgpio", "python3-bleak", "python3-yaml",
+    # gpiozero is what the Waveshare panel driver talks to, backed by lgpio.
+    # It ships on the Pi OS image, but relying on that leaves the panel dead on
+    # any image that drops it.
+    "python3-spidev", "python3-lgpio", "python3-gpiozero", "python3-bleak",
+    "python3-yaml",
 ]
+
+# Waveshare publish the panel driver only in their git repo -- no apt package and
+# no wheel -- so it is fetched at a pinned commit. Only the three files this
+# panel needs are taken: the repo is hundreds of megabytes of demo images for
+# dozens of panels, and /tmp here is a ~200MB tmpfs on a 415MB board, so pulling
+# the whole archive is enough to OOM the box into a watchdog reboot.
+EPAPER_COMMIT = "a794fbc39656b0f93938d1ffb3fdc77eaed9e9fc"
+EPAPER_BASE = ("https://raw.githubusercontent.com/waveshareteam/e-Paper/"
+               f"{EPAPER_COMMIT}/RaspberryPi_JetsonNano/python/lib/waveshare_epd")
+EPAPER_FILES = ("__init__.py", "epdconfig.py", "epd2in13_V4.py")
 
 BOOT_LINES = [
     "enable_uart=1",
@@ -185,6 +202,54 @@ def install_code():
     print("    ok: minidriver importable from the venv")
 
 
+def venv_python() -> Path:
+    return PREFIX / ".venv" / "bin" / "python"
+
+
+def install_epaper_driver():
+    """Put the Waveshare panel driver on the venv's path.
+
+    Idempotent and non-fatal: a box installed off a hotspot with no route to
+    GitHub still gets a working survey, just a dark screen -- display.ui already
+    treats an unavailable panel as a logged non-event.
+    """
+    py = venv_python()
+    # Locate the module without importing it. Waveshare's epdconfig instantiates
+    # its RaspberryPi class at import time, which claims the panel's GPIO pins --
+    # so actually importing it here would fail with 'GPIO busy' whenever the
+    # daemon is running, and wrongly report a healthy install as broken.
+    probe = [str(py), "-c", "import importlib.util as u, sys; "
+                            "sys.exit(0 if u.find_spec('waveshare_epd.epd2in13_V4')"
+                            " else 1)"]
+    if run(probe, capture_output=True).returncode == 0:
+        print("    waveshare_epd already present")
+        return
+
+    site = subprocess.run(
+        [str(py), "-c", "import site; print(site.getsitepackages()[0])"],
+        capture_output=True, text=True).stdout.strip()
+    if not site:
+        print("    !! cannot locate site-packages; the panel will stay dark")
+        return
+
+    target = Path(site) / "waveshare_epd"
+    target.mkdir(parents=True, exist_ok=True)
+    for name in EPAPER_FILES:
+        url = f"{EPAPER_BASE}/{name}"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                (target / name).write_bytes(response.read())
+        except (urllib.error.URLError, OSError) as exc:
+            print(f"    !! could not fetch {name} ({exc}); the panel will stay dark")
+            return
+    print(f"    fetched the panel driver into {target}")
+
+    if run(probe, capture_output=True).returncode == 0:
+        print("    ok: waveshare_epd on the venv path")
+    else:
+        print("    !! waveshare_epd still not found; the panel will stay dark")
+
+
 def seed_config():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     target = CONFIG_DIR / "config.yaml"
@@ -216,6 +281,7 @@ def main() -> int:
     print("==> ModemManager");           mask_modemmanager()
     print("==> gpsd");                    configure_gpsd()
     print("==> code");                    install_code()
+    print("==> e-paper driver");         install_epaper_driver()
     print("==> config");                 seed_config()
     print("==> service");                install_service()
     print()
