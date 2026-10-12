@@ -27,10 +27,12 @@ What is covered:
 | gpsd JSON folding | `tests/test_gps.py` |
 | BLE sighting shaping + bookkeeping | `tests/test_ble.py` |
 | Daemon-owned radio commands + IP parsing | `tests/test_station.py` |
-| The daemon loop: field poll, home switch, sweep | `tests/test_daemon.py` |
-| E-paper status lines | `tests/test_display.py` |
+| The daemon loop: field poll, home switch, sweep, radio release | `tests/test_daemon.py` |
+| E-paper status lines, and that a wedged panel cannot block the caller | `tests/test_display.py` |
 | Idempotent boot-config edits | `tests/test_provision.py` |
 | `psk` helper output | `tests/test_psk.py` |
+| Reversible NetworkManager handoff | `tests/test_nm.py` |
+| The stranded-box recovery decision | `tests/test_recover.py` |
 
 ## Live device tests
 
@@ -57,7 +59,45 @@ a USB GPS dongle for the parts that need a fix. Then, on the box:
   reaches WiGLE/WDGWars/Wardrift. The ledger prevents duplicate submissions, so
   re-running is safe.
 
+## Testing the recovery path
+
+The daemon takes `wlan0` from NetworkManager, so on a WiFi-only box a daemon
+fault is the difference between reachable and gone. That recovery must be
+exercised, not assumed — an earlier version *claimed* `Restart=always` was the
+mitigation, which was false and locked a box out completely.
+
+Before trusting a deployment, confirm all three layers on the device:
+
+- **The daemon comes home unaided.** `systemctl start minidriver`, then watch the
+  journal: it should enter FIELD, recognise the home SSID and bind an address
+  within ~15s.
+- **The timer spares a healthy daemon.** `systemctl start
+  minidriver-recover.service` while the box is home — it must log `healthy` and
+  leave the service running.
+- **The recovery action works.** Call it directly:
+
+  ```
+  sudo /opt/minidriver/.venv/bin/python -c \
+    "from minidriver import recover; recover.recover('wlan0', 'manual test')"
+  ```
+
+  The daemon should stop and NetworkManager should reconnect within seconds.
+
+When testing a daemon that owns the radio, arm an independent deadman first so a
+failure cannot strand the box:
+
+```
+sudo systemd-run --on-active=180 --unit=deadman /bin/sh -c \
+  'systemctl stop minidriver; nmcli device set wlan0 managed yes'
+```
+
+Cancel it with `systemctl stop deadman.timer` once the daemon has proven itself.
+
 ## Hardware-only (once the HATs are mounted)
 
-E-paper rendering and the L76K on `/dev/serial0` are validated on the assembled
-device; both are thin wrappers over tested logic.
+The panel driver claims the GPIO pins at import time, so only one process can
+import it — a manual panel test needs `minidriver.service` stopped first, and
+presence should be checked with `importlib.util.find_spec`, never a real import.
+
+Battery boards need their own test: confirm `wlan0` still associates on battery
+before trusting one in the field (see the README).
