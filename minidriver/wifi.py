@@ -87,15 +87,6 @@ def auth_mode(ap: dict) -> str:
     return "".join(parts) + "[ESS]"
 
 
-def short_crypt(ap: dict) -> str:
-    """The headline protocol: "open", "WPA", "WPA2", "WPA3" -- strongest named."""
-    named = (ap.get("encryption") or "").upper()
-    for marker in ("WPA3", "WPA2", "WPA", "WEP"):
-        if marker in named:
-            return marker
-    return "open"
-
-
 def ssid(ap: dict) -> str:
     """The network name, blank when hidden."""
     name = ap.get("hostname") or ""
