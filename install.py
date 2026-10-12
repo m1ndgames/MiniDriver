@@ -208,6 +208,9 @@ def install_code():
 # lexicographic order of filename across every config directory, and Raspberry
 # Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf. A
 # lower number loses to it and the setting silently does nothing.
+BRCMFMAC_CONF = Path("/etc/modprobe.d/brcmfmac-minidriver.conf")
+BRCMFMAC_OPTIONS = "options brcmfmac roamoff=1 feature_disable=0x82000\n"
+
 JOURNAL_DROP_IN = Path(
     "/etc/systemd/journald.conf.d/99-minidriver-persistent.conf")
 
@@ -226,6 +229,32 @@ SystemMaxUse=64M
 SystemMaxFileSize=8M
 Compress=yes
 """
+
+
+def configure_wifi_firmware():
+    """Work around the Zero 2 W brcmfmac association failure.
+
+    The onboard CYW43436 firmware fails to associate with *some* access points,
+    which presents as a box that boots fine and never gets a lease -- and it is
+    intermittent, so a build that worked yesterday proves nothing. Tracked
+    upstream as raspberrypi/trixie-feedback#23, carried over from
+    bookworm-feedback#279, so it is not specific to one Raspberry Pi OS release.
+
+    roamoff=1 stops the firmware roaming between BSSIDs; feature_disable turns
+    off the feature bits implicated in the reports. Needs a reboot (or a module
+    reload) to take effect, which the installer already asks for.
+    """
+    existing = sorted(Path("/etc/modprobe.d").glob("*brcmfmac*"))
+    for path in existing:
+        if path != BRCMFMAC_CONF:
+            print(f"    note: {path} also sets brcmfmac options")
+
+    if BRCMFMAC_CONF.is_file() and BRCMFMAC_CONF.read_text() == BRCMFMAC_OPTIONS:
+        print(f"    {BRCMFMAC_CONF} already set")
+        return
+    BRCMFMAC_CONF.parent.mkdir(parents=True, exist_ok=True)
+    BRCMFMAC_CONF.write_text(BRCMFMAC_OPTIONS)
+    print(f"    wrote {BRCMFMAC_CONF}")
 
 
 def configure_journal():
@@ -324,6 +353,7 @@ def main() -> int:
     print("==> boot configuration");     edit_boot()
     print("==> wlan0 ownership");        drop_legacy_unmanaged()
     print("==> ModemManager");           mask_modemmanager()
+    print("==> wifi firmware");          configure_wifi_firmware()
     print("==> journal");                configure_journal()
     print("==> gpsd");                    configure_gpsd()
     print("==> code");                    install_code()
