@@ -56,6 +56,11 @@ DEFAULTS: dict = {
         "enabled": True,
     },
     "display": {
+        # Drive the e-paper panel at all. Off is the way to rule the panel out
+        # when the box misbehaves: the driver waits on the panel's BUSY pin
+        # without a timeout, so a sick panel is worth being able to disable
+        # without pulling the HAT off the header.
+        "enabled": True,
         # 0/90/180/270. The 2.13" panel is 250x122; rotation depends on how the
         # case mounts it.
         "rotate": 0,

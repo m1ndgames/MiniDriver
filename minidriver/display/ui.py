@@ -11,6 +11,7 @@ lazily, because PIL and the driver only exist on the box. E-paper wears a little
 with every refresh, so the daemon redraws on a cadence, not on every change.
 """
 import logging
+import threading
 
 log = logging.getLogger(__name__)
 
@@ -105,3 +106,78 @@ class Display:
                 self._epd.sleep()
             except Exception:                              # noqa: BLE001
                 log.debug("could not sleep the panel", exc_info=True)
+
+
+class BackgroundDisplay:
+    """Draws on a worker thread, so a wedged panel cannot stall the daemon.
+
+    The Waveshare driver waits on the panel's BUSY pin in an unbounded loop, so a
+    panel that never reports ready blocks its caller forever rather than raising.
+    The daemon's loop also scans and sends the systemd watchdog heartbeat, so
+    blocking there turns a dark screen into a box that gets killed by the
+    watchdog with its radio already taken -- which is to say, into a box nobody
+    can reach.
+
+    Only the newest status is kept. There is no queue, because a backlog of stale
+    frames is worth nothing: if drawing falls behind, the right thing to show
+    when it catches up is the current state, not the history.
+    """
+
+    def __init__(self, display):
+        self._display = display
+        self._lock = threading.Lock()
+        self._pending = None
+        self._wake = threading.Event()
+        self._stopping = threading.Event()
+        self._thread = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        # A daemon thread on purpose: if the panel is wedged in a driver call
+        # that never returns, the process must still be able to exit.
+        self._thread = threading.Thread(target=self._run, name="display",
+                                        daemon=True)
+        self._thread.start()
+
+    def render(self, status: dict) -> None:
+        """Hand over the latest status. Never blocks on the panel."""
+        with self._lock:
+            self._pending = status
+        self._wake.set()
+
+    def _take(self):
+        with self._lock:
+            status, self._pending = self._pending, None
+        return status
+
+    def _run(self) -> None:
+        while not self._stopping.is_set():
+            self._wake.wait()
+            self._wake.clear()
+            status = self._take()
+            if status is None:
+                continue
+            try:
+                self._display.render(status)
+            except Exception:                              # noqa: BLE001
+                log.exception("rendering the panel failed")
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Stop drawing and put the panel to sleep, giving up if it is wedged.
+
+        An un-slept panel makes the next init unreliable, so sleeping matters --
+        but not enough to hang shutdown on hardware that has stopped answering.
+        """
+        self._stopping.set()
+        self._wake.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                log.warning("panel still drawing after %.1fs; leaving it", timeout)
+                return
+        try:
+            self._display.sleep()
+        except Exception:                                  # noqa: BLE001
+            log.debug("could not sleep the panel", exc_info=True)
