@@ -58,6 +58,12 @@ ble:
   enabled: true
 
 display:
+  # Drive the e-paper panel at all. Set false to rule the panel out when the box
+  # is misbehaving -- the Waveshare driver waits on the panel's BUSY pin with no
+  # timeout, so a sick panel is worth being able to switch off without pulling
+  # the HAT. Drawing happens on its own thread either way, so a stuck panel
+  # cannot stall the survey.
+  enabled: true
   # 0 / 90 / 180 / 270, depending on how the case mounts the panel.
   rotate: 0
   # Seconds between panel redraws. E-paper wears with every refresh, so status is

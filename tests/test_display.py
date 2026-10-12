@@ -4,7 +4,9 @@ The 2.13" panel is 250x122, monochrome and has no buttons, so the UI is
 output-only: a handful of status lines. PIL and the Waveshare driver are
 hardware; what is tested is how a status snapshot becomes those lines.
 """
-from minidriver.display.ui import status_lines
+import threading
+
+from minidriver.display.ui import BackgroundDisplay, status_lines
 
 
 def status(**over):
@@ -57,3 +59,90 @@ def test_survives_a_sparse_status():
     # A status taken before the first scan must still render without raising.
     lines = status_lines({"mode": "field"})
     assert isinstance(lines, list) and lines
+
+
+class WedgedPanel:
+    """A panel that never finishes drawing.
+
+    Waveshare's driver waits on the BUSY pin with no timeout, so this is the real
+    hardware failure: not an exception, an unbounded block.
+    """
+
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.slept = False
+
+    def render(self, status):
+        self.entered.set()
+        self.release.wait()          # never released in these tests
+
+    def sleep(self):
+        self.slept = True
+
+
+class RecordingPanel:
+    def __init__(self):
+        self.drawn = []
+        self.slept = False
+
+    def render(self, status):
+        self.drawn.append(status)
+
+    def sleep(self):
+        self.slept = True
+
+
+class TestBackgroundDisplay:
+    def test_a_wedged_panel_does_not_block_the_caller(self):
+        """The daemon's loop also pets the systemd watchdog, so blocking here
+        would turn a dark screen into a box that gets restarted or stranded."""
+        panel = WedgedPanel()
+        screen = BackgroundDisplay(panel)
+        screen.start()
+        try:
+            screen.render(status())
+            assert panel.entered.wait(timeout=5), "worker never started drawing"
+            # The panel is now stuck inside render(); the caller must still fly.
+            for _ in range(100):
+                screen.render(status())
+        finally:
+            panel.release.set()
+            screen.stop(timeout=1)
+
+    def test_stop_gives_up_on_a_wedged_panel(self):
+        panel = WedgedPanel()
+        screen = BackgroundDisplay(panel)
+        screen.start()
+        try:
+            screen.render(status())
+            panel.entered.wait(timeout=5)
+            screen.stop(timeout=0.2)     # must return, not hang forever
+        finally:
+            panel.release.set()
+
+    def test_only_the_newest_status_is_drawn(self):
+        """There is no queue: a slow panel must not accumulate a backlog of
+        frames to replay, because only the current status is worth showing."""
+        panel = RecordingPanel()
+        screen = BackgroundDisplay(panel)
+        screen.start()
+        try:
+            for rows in range(50):
+                screen.render(status(rows=rows))
+            screen.stop(timeout=5)
+        finally:
+            screen.stop(timeout=1)
+        assert panel.drawn, "nothing was drawn at all"
+        assert len(panel.drawn) <= 50
+        assert panel.drawn[-1]["rows"] == 49
+
+    def test_stop_sleeps_a_healthy_panel(self):
+        """Leaving the panel un-slept across a reboot is what makes the next
+        init unreliable."""
+        panel = RecordingPanel()
+        screen = BackgroundDisplay(panel)
+        screen.start()
+        screen.render(status())
+        screen.stop(timeout=5)
+        assert panel.slept is True

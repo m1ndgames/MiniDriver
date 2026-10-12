@@ -14,7 +14,7 @@ from minidriver import nm
 from minidriver.ble import BleScanner
 from minidriver.config import DEFAULT_CONFIG_PATH, load_config
 from minidriver.daemon import Daemon
-from minidriver.display.ui import Display
+from minidriver.display.ui import BackgroundDisplay, Display
 from minidriver.gps import read_gpsd
 from minidriver.statemachine import ModeMachine
 from minidriver.station import Station
@@ -70,12 +70,21 @@ def main(argv=None) -> int:
                           lost_checks=scan.get("home_lost_checks", 3))
     ledger = UploadLedger(
         f"{cfg.get('paths', {}).get('data_dir', '/var/lib/minidriver')}/minidriver.db")
-    display = Display(rotate=cfg.get("display", {}).get("rotate", 0))
+    display_cfg = cfg.get("display", {})
+    screen = None
+    if display_cfg.get("enabled", True):
+        # Wrapped so the panel draws on its own thread: the driver blocks on the
+        # panel's BUSY pin without a timeout, and the loop below also sends the
+        # watchdog heartbeat.
+        screen = BackgroundDisplay(Display(rotate=display_cfg.get("rotate", 0)))
+        screen.start()
+    else:
+        log.info("display disabled by config")
 
     daemon = Daemon(cfg, station=station, ble=BleScanner(), machine=machine,
                     ledger=ledger,
                     client_factory=_client_factory(cfg.get("services", {})),
-                    gps_read=read_gpsd, display=display)
+                    gps_read=read_gpsd, display=screen)
 
     def shutdown(*_):
         log.info("shutting down")
@@ -85,7 +94,14 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGINT, shutdown)
 
     log.info("minidriver starting; home networks: %s", home_ssids or "none set")
-    daemon.run()
+    try:
+        daemon.run()
+    finally:
+        if screen is not None:
+            # Sleeping the panel is what keeps the next init reliable; stop()
+            # gives up rather than hanging shutdown on a panel that has stopped
+            # answering.
+            screen.stop()
     return 0
 
 
