@@ -28,6 +28,22 @@ class TestParseGpsd:
         assert gps["altitude"] == 40.0
         assert has_fix(gps) is True
 
+    def test_null_island_is_not_a_fix(self):
+        """A cold-starting receiver reports mode 2 with 0,0 before it has a real
+        position. Recording that fills the capture with rows the upload path
+        then throws away -- and 0,0 is how "nowhere" is written in this format,
+        not a spot in the Gulf of Guinea."""
+        assert has_fix({"mode": 2, "latitude": 0.0, "longitude": 0.0}) is False
+        assert has_fix({"mode": 3, "latitude": 0, "longitude": 0}) is False
+
+    def test_a_real_position_near_the_equator_still_counts(self):
+        """Only exactly 0,0 is rejected; genuinely small coordinates are fine."""
+        assert has_fix({"mode": 2, "latitude": 0.0001,
+                        "longitude": 0.0}) is True
+
+    def test_a_missing_longitude_is_not_a_fix(self):
+        assert has_fix({"mode": 2, "latitude": 51.2, "longitude": None}) is False
+
     def test_satellites_seen_and_used_are_counted(self):
         gps = parse_gpsd([sky([True, False, True, False, False])])
         assert gps["satellites_seen"] == 5

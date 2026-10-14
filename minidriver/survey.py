@@ -12,7 +12,8 @@ import csv
 import logging
 import pathlib
 
-from minidriver.wifi import (auth_mode, frequency_for, has_fix, seen_at, ssid)
+from minidriver.gps import has_fix
+from minidriver.wifi import auth_mode, frequency_for, seen_at, ssid
 
 log = logging.getLogger(__name__)
 
