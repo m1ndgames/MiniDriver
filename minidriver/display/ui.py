@@ -35,15 +35,25 @@ def battery_text(status: dict) -> str:
 
 
 def gps_text(status: dict) -> str:
-    """The position itself when there is a fix -- it is the one number worth
-    reading off the panel mid-drive, and it doubles as proof the survey is
-    recording, since nothing is written without a fix."""
+    """The position when there is a fix, otherwise the search progress.
+
+    The position is the one number worth reading off the panel mid-drive, and it
+    doubles as proof the survey is recording, since nothing is written without a
+    fix. Without one, satellite counts are what answer the actual question --
+    "is this getting anywhere, or is the antenna blind?" -- which a bare
+    "no fix" does not. A cold start can take minutes, so watching used climb
+    towards seen is the difference between waiting and giving up.
+    """
     gps = (status or {}).get("gps") or {}
     latitude, longitude = gps.get("latitude"), gps.get("longitude")
-    if not gps.get("fix") or latitude is None or longitude is None:
-        return "GPS: no fix"
-    # Four decimals is about 11m: finer would not fit and would not be read.
-    return f"GPS: {latitude:.4f}, {longitude:.4f}"
+    if gps.get("fix") and latitude is not None and longitude is not None:
+        # Four decimals is about 11m: finer would not fit and would not be read.
+        return f"GPS: {latitude:.4f}, {longitude:.4f}"
+    seen = gps.get("sats_seen") or 0
+    if not seen:
+        # Nothing heard at all: no antenna, no sky, or no gpsd.
+        return "GPS: no signal"
+    return f"GPS: searching {gps.get('sats_used') or 0}/{seen}"
 
 
 def activity_text(status: dict) -> str:

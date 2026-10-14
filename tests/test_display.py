@@ -64,15 +64,33 @@ class TestGpsLine:
     def test_shows_the_position_when_there_is_a_fix(self):
         assert gps_text(status()) == "GPS: 51.2345, 6.7654"
 
-    def test_says_no_fix_without_one(self):
-        no_fix = {"fix": False, "mode": 1, "latitude": None, "longitude": None}
-        assert gps_text(status(gps=no_fix)) == "GPS: no fix"
+    def test_shows_search_progress_instead_of_a_bare_no_fix(self):
+        """Satellite counts answer the real question during a cold start: is
+        this getting anywhere, or is the antenna blind?"""
+        searching = {"fix": False, "mode": 1, "latitude": None,
+                     "longitude": None, "sats_used": 3, "sats_seen": 11}
+        assert gps_text(status(gps=searching)) == "GPS: searching 3/11"
 
-    def test_a_mode_without_coordinates_is_still_no_fix(self):
+    def test_nothing_heard_at_all_says_no_signal(self):
+        """No antenna, no sky, or no gpsd -- distinct from searching."""
+        blind = {"fix": False, "mode": 0, "latitude": None, "longitude": None,
+                 "sats_used": 0, "sats_seen": 0}
+        assert gps_text(status(gps=blind)) == "GPS: no signal"
+
+    def test_null_island_is_never_shown_as_a_position(self):
+        """A cold-starting receiver reports mode 2 at exactly 0,0. build_status
+        marks that as no fix, and the panel must then show progress rather than
+        printing 0.0000, 0.0000."""
+        null_island = {"fix": False, "mode": 2, "latitude": 0.0,
+                       "longitude": 0.0, "sats_used": 3, "sats_seen": 11}
+        assert gps_text(status(gps=null_island)) == "GPS: searching 3/11"
+
+    def test_a_mode_without_coordinates_is_not_a_position(self):
         """gpsd can report a mode before it has a position."""
         assert gps_text(status(gps={"fix": True, "mode": 2,
-                                    "latitude": None,
-                                    "longitude": None})) == "GPS: no fix"
+                                    "latitude": None, "longitude": None,
+                                    "sats_seen": 4, "sats_used": 0})
+                        ) == "GPS: searching 0/4"
 
     def test_southern_and_western_positions_still_fit(self):
         wide = status(gps={"fix": True, "mode": 3, "latitude": -33.8688,

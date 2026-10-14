@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from minidriver import wifi
+from minidriver.gps import has_fix
 from minidriver.statemachine import FIELD, HOME, ModeMachine
 from minidriver.survey import SurveyLog
 from minidriver import sweep
@@ -37,7 +38,10 @@ def build_status(mode, gps, aps, ble, rows, pending, last_upload, ip,
         "connected": mode == HOME and bool(ip),
         "activity": activity or ("scanning" if mode == FIELD else "idle"),
         "battery": battery,
-        "gps": {"fix": bool(gps.get("fix") or gps.get("mode", 0) >= 2),
+        # The same test the survey writer uses, so the panel can never claim a
+        # fix the capture is rejecting -- a cold-starting receiver reports
+        # mode 2 at 0,0, which is not a position.
+        "gps": {"fix": has_fix(gps),
                 "mode": gps.get("mode", 0),
                 "latitude": gps.get("latitude"),
                 "longitude": gps.get("longitude"),

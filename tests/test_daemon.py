@@ -120,6 +120,15 @@ class TestBuildStatus:
         assert st["wifi_aps"] == 2 and st["ble_devices"] == 1 and st["rows"] == 10
         assert st["gps"]["fix"] is True
 
+    def test_null_island_is_not_reported_as_a_fix(self):
+        """The panel must use the same test as the survey writer, or it claims a
+        fix the capture is rejecting. A cold start sits at mode 2 / 0,0."""
+        cold = {"mode": 2, "latitude": 0.0, "longitude": 0.0,
+                "sats_used": 3, "sats_seen": 11}
+        st = build_status(mode="field", gps=cold, aps={}, ble=[], rows=0,
+                          pending={}, last_upload=None, ip=None)
+        assert st["gps"]["fix"] is False
+
     def test_carries_the_position_through_for_the_panel(self):
         st = build_status(mode="field", gps=FIX, aps={}, ble=[], rows=0,
                           pending={}, last_upload=None, ip=None)
