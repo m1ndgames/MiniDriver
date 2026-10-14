@@ -108,6 +108,9 @@ journalctl -fu minidriver
 
 The e-paper panel shows the current mode, GPS fix, how many WiFi/BLE sightings
 the session has, what is waiting to upload, and — when home — the box's LAN IP.
+If a PiSugar UPS is fitted, the header also carries the battery level
+(`MiniDriver  FIELD  75%`, with `+` while charging), read from
+`pisugar-server`'s Unix socket. No UPS, or no `pisugar-server`, simply omits it.
 It is drawn on its own thread, because the panel driver waits on the display's
 BUSY pin without a timeout and a dead panel must never stall the survey. Set
 `display.enabled: false` to rule the panel out without unmounting the HAT.
