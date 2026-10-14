@@ -24,12 +24,25 @@ def _gps_line(gps: dict) -> str:
     return f"GPS: {label} {gps.get('sats_used', 0)}/{gps.get('sats_seen', 0)} sats"
 
 
+def _battery_tag(battery) -> str:
+    """The battery marker for the header, blank when there is no UPS to read.
+
+    A bare "+" means charging: the panel is one-bit monochrome, so a single
+    character costs far less width than a word and reads at a glance.
+    """
+    percent = (battery or {}).get("percent")
+    if percent is None:
+        return ""
+    return f"  {'+' if (battery or {}).get('charging') else ''}{percent}%"
+
+
 def status_lines(status: dict) -> list:
     """The lines to draw for a status snapshot. Tolerates a sparse status taken
     before the first scan -- every field is read with a default."""
     status = status or {}
     mode = str(status.get("mode", "field")).upper()
-    lines = [f"MiniDriver  {mode}", _gps_line(status.get("gps"))]
+    lines = [f"MiniDriver  {mode}{_battery_tag(status.get('battery'))}",
+             _gps_line(status.get("gps"))]
 
     lines.append(f"WiFi: {status.get('wifi_aps', 0)}   "
                  f"BLE: {status.get('ble_devices', 0)}")

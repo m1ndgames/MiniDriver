@@ -17,6 +17,7 @@ def status(**over):
         "pending": {"wigle": 2, "wdgwars": 2, "wardrift": 2},
         "last_upload": None,
         "ip": None,
+        "battery": None,
     }
     base.update(over)
     return base
@@ -29,6 +30,30 @@ def joined(**over):
 def test_shows_the_mode():
     assert "FIELD" in joined(mode="field")
     assert "HOME" in joined(mode="home")
+
+
+class TestBatteryOnThePanel:
+    def header(self, **over):
+        return status_lines(status(**over))[0]
+
+    def test_shows_the_percentage_on_the_header_line(self):
+        """On the header because it is always visible, and because the panel
+        has room for it there without spending another line."""
+        assert "75%" in self.header(battery={"percent": 75, "charging": False})
+
+    def test_marks_charging_with_a_plus(self):
+        text = self.header(battery={"percent": 75, "charging": True})
+        assert "+75%" in text
+
+    def test_no_ups_fitted_shows_nothing_extra(self):
+        assert self.header(battery=None).strip() == "MiniDriver  FIELD"
+        assert "%" not in self.header(battery={})
+
+    def test_stays_within_the_panel_width(self):
+        """250px at 14px monospace is about 29 characters."""
+        worst = self.header(mode="field", battery={"percent": 100,
+                                                   "charging": True})
+        assert len(worst) <= 29
 
 
 def test_shows_a_gps_fix_with_satellites():

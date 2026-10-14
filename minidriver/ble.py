@@ -72,16 +72,19 @@ class BleScanner:
         self._thread.start()
 
     def stop(self) -> None:
+        """Ask the scan to finish and wait briefly for it.
+
+        Deliberately does NOT stop the event loop from outside: doing that aborts
+        run_until_complete with "Event loop stopped before Future completed",
+        which logs a traceback on every clean shutdown and skips the scanner's
+        own BlueZ teardown. Setting the flag lets _scan() leave its own loop and
+        run that teardown.
+        """
         self._stop.set()
-        loop, self._loop = self._loop, None
-        if loop is not None:
-            try:
-                loop.call_soon_threadsafe(loop.stop)
-            except RuntimeError:
-                pass
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=5.0)
+        self._loop = None
 
     def _run(self) -> None:
         try:

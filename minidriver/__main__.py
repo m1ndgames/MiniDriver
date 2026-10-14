@@ -10,7 +10,7 @@ import logging
 import signal
 import sys
 
-from minidriver import nm
+from minidriver import battery, nm
 from minidriver.ble import BleScanner
 from minidriver.config import DEFAULT_CONFIG_PATH, load_config
 from minidriver.daemon import Daemon
@@ -84,7 +84,8 @@ def main(argv=None) -> int:
     daemon = Daemon(cfg, station=station, ble=BleScanner(), machine=machine,
                     ledger=ledger,
                     client_factory=_client_factory(cfg.get("services", {})),
-                    gps_read=read_gpsd, display=screen)
+                    gps_read=read_gpsd, display=screen,
+                    battery_read=battery.read)
 
     def shutdown(*_):
         log.info("shutting down")
