@@ -17,8 +17,22 @@ log = logging.getLogger(__name__)
 
 
 def has_fix(gps: dict) -> bool:
-    """Whether a snapshot carries a usable 2D-or-better position."""
-    return ((gps or {}).get("mode") or 0) >= 2 and gps.get("latitude") is not None
+    """Whether a snapshot carries a usable 2D-or-better position.
+
+    Exactly 0,0 is rejected. A cold-starting receiver reports mode 2 with 0,0
+    for a while before it has a real position -- observed on a u-blox 7 with 3
+    satellites used -- and in the WigleWifi format 0,0 is how "nowhere" is
+    written, not a spot in the Gulf of Guinea. The upload path already strips
+    such rows, so accepting them here only fills the capture with records that
+    get thrown away, and makes the panel's "saved" count a lie.
+    """
+    gps = gps or {}
+    if (gps.get("mode") or 0) < 2:
+        return False
+    latitude, longitude = gps.get("latitude"), gps.get("longitude")
+    if latitude is None or longitude is None:
+        return False
+    return not (latitude == 0 and longitude == 0)
 
 
 def parse_gpsd(lines) -> dict:

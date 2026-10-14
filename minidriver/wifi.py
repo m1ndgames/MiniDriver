@@ -103,11 +103,6 @@ def seen_at(stamp):
         return None
 
 
-def has_fix(gps: dict) -> bool:
-    """Whether a gps snapshot carries a usable 2D-or-better position."""
-    return ((gps or {}).get("mode") or 0) >= 2 and gps.get("latitude") is not None
-
-
 def _security_fields(rsn: dict, wpa: dict, private: bool) -> dict:
     """encryption/authentication/cipher from a scan's RSN and WPA blocks, so a
     scanned AP feeds auth_mode() the same as one heard any other way.
