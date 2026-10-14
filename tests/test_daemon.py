@@ -120,6 +120,27 @@ class TestBuildStatus:
         assert st["wifi_aps"] == 2 and st["ble_devices"] == 1 and st["rows"] == 10
         assert st["gps"]["fix"] is True
 
+    def test_carries_the_position_through_for_the_panel(self):
+        st = build_status(mode="field", gps=FIX, aps={}, ble=[], rows=0,
+                          pending={}, last_upload=None, ip=None)
+        assert st["gps"]["latitude"] == FIX["latitude"]
+        assert st["gps"]["longitude"] == FIX["longitude"]
+
+    def test_connected_means_associated_and_addressed(self):
+        """An association with no lease is not something you can SSH into."""
+        home = dict(gps=FIX, aps={}, ble=[], rows=0, pending={}, last_upload=None)
+        assert build_status(mode="home", ip="192.168.1.9", **home)["connected"]
+        assert not build_status(mode="home", ip=None, **home)["connected"]
+        assert not build_status(mode="field", ip="192.168.1.9", **home)["connected"]
+
+    def test_activity_follows_the_mode_unless_overridden(self):
+        common = dict(gps=FIX, aps={}, ble=[], rows=0, pending={},
+                      last_upload=None, ip=None)
+        assert build_status(mode="field", **common)["activity"] == "scanning"
+        assert build_status(mode="home", **common)["activity"] == "idle"
+        assert build_status(mode="home", activity="uploading",
+                            **common)["activity"] == "uploading"
+
 
 class TestFieldPoll:
     def test_a_field_poll_records_scanned_aps(self, tmp_path):

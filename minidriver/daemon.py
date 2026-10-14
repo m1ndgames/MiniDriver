@@ -27,18 +27,29 @@ SERVICES = ("wigle", "wdgwars", "wardrift")
 
 
 def build_status(mode, gps, aps, ble, rows, pending, last_upload, ip,
-                 battery=None) -> dict:
+                 battery=None, activity=None, wifi_saved=0, ble_saved=0) -> dict:
     """The status snapshot the display renders. Pure so it is easy to check."""
     gps = gps or {}
     return {
         "mode": mode,
+        # Reachable means associated *and* addressed: an association with no
+        # lease is not something you can SSH into.
+        "connected": mode == HOME and bool(ip),
+        "activity": activity or ("scanning" if mode == FIELD else "idle"),
         "battery": battery,
         "gps": {"fix": bool(gps.get("fix") or gps.get("mode", 0) >= 2),
                 "mode": gps.get("mode", 0),
+                "latitude": gps.get("latitude"),
+                "longitude": gps.get("longitude"),
                 "sats_used": gps.get("sats_used", gps.get("satellites_used", 0)),
                 "sats_seen": gps.get("sats_seen", gps.get("satellites_seen", 0))},
         "wifi_aps": len(aps or {}),
         "ble_devices": len(ble or []),
+        # Seen and saved are different numbers, and the gap is the whole point:
+        # nothing is written without a GPS fix, so "seeing plenty, saving none"
+        # is the signature of a GPS problem rather than a radio problem.
+        "wifi_saved": wifi_saved,
+        "ble_saved": ble_saved,
         "rows": rows,
         "pending": dict(pending or {}),
         "last_upload": last_upload,
@@ -73,10 +84,14 @@ class Daemon:
 
         self.gps = {}
         self.aps = {}
+        # Unique sightings actually written this session, per kind.
+        self.saved_wifi = set()
+        self.saved_ble = set()
         self.survey = None
         self.ip = None
         self.last_upload = None
         self.pending = {s: 0 for s in SERVICES}
+        self._activity = None
         self._stop = threading.Event()
 
     # ---------------------------------------------------------------- lifecycle
@@ -108,6 +123,8 @@ class Daemon:
 
     def _enter_field(self, now_wall: float = None) -> None:
         self.aps = {}
+        self.saved_wifi = set()
+        self.saved_ble = set()
         try:
             self.ble.clear()
         except Exception:                                  # noqa: BLE001
@@ -130,6 +147,25 @@ class Daemon:
         return sorted(self.data_root.glob(f"sessions/session_*/{CAPTURE_NAME}"))
 
     def _sweep_uploads(self) -> None:
+        # The sweep blocks this loop for as long as the uploads take, so push a
+        # frame before starting: the panel draws on its own thread, so this is
+        # the only way "uploading" is ever actually seen.
+        self._activity = "uploading"
+        self._refresh_panel()
+        try:
+            self._run_sweep()
+        finally:
+            self._activity = None
+
+    def _refresh_panel(self) -> None:
+        if self.display is None:
+            return
+        try:
+            self.display.render(self.status())
+        except Exception:                                  # noqa: BLE001
+            log.debug("could not refresh the panel", exc_info=True)
+
+    def _run_sweep(self) -> None:
         captures = self._captures()
         summary = []
         for service in SERVICES:
@@ -184,9 +220,14 @@ class Daemon:
     def _record(self, aps, now_wall, now_mono) -> None:
         if self.survey is None:
             return
-        self.survey.record(aps, self.gps, now_wall, now_mono)
+        # record() returns the MACs it actually wrote, which is empty without a
+        # fix -- that is what makes the panel's "saved" counts honest.
+        self.saved_wifi.update(
+            self.survey.record(aps, self.gps, now_wall, now_mono))
         if self._ble_enabled:
-            self.survey.record(self.ble.snapshot(), self.gps, now_wall, now_mono)
+            self.saved_ble.update(
+                self.survey.record(self.ble.snapshot(), self.gps, now_wall,
+                                   now_mono))
 
     def status(self) -> dict:
         # Read only when a snapshot is wanted, which is the panel's refresh
@@ -197,7 +238,9 @@ class Daemon:
                             self.survey.rows if self.survey else 0,
                             self.pending, self.last_upload,
                             self.ip if self.machine.mode == HOME else None,
-                            battery=battery)
+                            battery=battery, activity=self._activity,
+                            wifi_saved=len(self.saved_wifi),
+                            ble_saved=len(self.saved_ble))
 
     # ---------------------------------------------------------------------- run
     def run(self) -> None:

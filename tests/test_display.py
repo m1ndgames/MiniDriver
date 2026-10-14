@@ -1,89 +1,126 @@
 """The e-paper status dashboard.
 
 The 2.13" panel is 250x122, monochrome and has no buttons, so the UI is
-output-only: a handful of status lines. PIL and the Waveshare driver are
-hardware; what is tested is how a status snapshot becomes those lines.
+output-only. PIL and the Waveshare driver are hardware; what is tested is how a
+status snapshot becomes the text that goes on the panel.
+
+Layout:
+
+    not connected                75%
+    WIFI: 42
+    BLE: 5
+    GPS: 51.2345, 6.7654
+    Status: scanning
 """
 import threading
 
-from minidriver.display.ui import BackgroundDisplay, status_lines
+from minidriver.display.ui import (BackgroundDisplay, activity_text,
+                                   battery_text, body_lines, connection_text,
+                                   gps_text)
+
+# 250px at 14px DejaVu Sans Mono is about 29 characters.
+PANEL_COLUMNS = 29
 
 
 def status(**over):
     base = {
-        "mode": "field",
-        "gps": {"fix": True, "mode": 3, "sats_used": 7, "sats_seen": 11},
-        "wifi_aps": 42, "ble_devices": 5, "rows": 318,
-        "pending": {"wigle": 2, "wdgwars": 2, "wardrift": 2},
-        "last_upload": None,
-        "ip": None,
+        "connected": False,
+        "activity": "scanning",
         "battery": None,
+        "gps": {"fix": True, "mode": 3, "latitude": 51.2345,
+                "longitude": 6.7654, "sats_used": 7, "sats_seen": 11},
+        "wifi_aps": 42, "wifi_saved": 18,
+        "ble_devices": 5, "ble_saved": 2,
+        "rows": 318,
     }
     base.update(over)
     return base
 
 
-def joined(**over):
-    return "\n".join(status_lines(status(**over)))
+class TestHeader:
+    def test_shows_whether_the_box_is_connected(self):
+        assert connection_text(status(connected=True)) == "connected"
+        assert connection_text(status(connected=False)) == "not connected"
 
-
-def test_shows_the_mode():
-    assert "FIELD" in joined(mode="field")
-    assert "HOME" in joined(mode="home")
-
-
-class TestBatteryOnThePanel:
-    def header(self, **over):
-        return status_lines(status(**over))[0]
-
-    def test_shows_the_percentage_on_the_header_line(self):
-        """On the header because it is always visible, and because the panel
-        has room for it there without spending another line."""
-        assert "75%" in self.header(battery={"percent": 75, "charging": False})
+    def test_shows_the_battery_percentage(self):
+        assert battery_text(status(battery={"percent": 75})) == "75%"
 
     def test_marks_charging_with_a_plus(self):
-        text = self.header(battery={"percent": 75, "charging": True})
-        assert "+75%" in text
+        assert battery_text(
+            status(battery={"percent": 75, "charging": True})) == "+75%"
 
-    def test_no_ups_fitted_shows_nothing_extra(self):
-        assert self.header(battery=None).strip() == "MiniDriver  FIELD"
-        assert "%" not in self.header(battery={})
+    def test_no_ups_fitted_leaves_the_corner_empty(self):
+        assert battery_text(status(battery=None)) == ""
+        assert battery_text(status(battery={})) == ""
 
-    def test_stays_within_the_panel_width(self):
-        """250px at 14px monospace is about 29 characters."""
-        worst = self.header(mode="field", battery={"percent": 100,
-                                                   "charging": True})
-        assert len(worst) <= 29
-
-
-def test_shows_a_gps_fix_with_satellites():
-    text = joined(gps={"fix": True, "mode": 3, "sats_used": 7, "sats_seen": 11})
-    assert "7" in text and "11" in text
+    def test_header_fits_across_the_panel(self):
+        worst = status(connected=False,
+                       battery={"percent": 100, "charging": True})
+        assert (len(connection_text(worst)) + 1
+                + len(battery_text(worst))) <= PANEL_COLUMNS
 
 
-def test_shows_no_fix_when_there_is_none():
-    text = joined(gps={"fix": False, "mode": 1, "sats_used": 0, "sats_seen": 9})
-    assert "no fix" in text.lower()
+class TestGpsLine:
+    def test_shows_the_position_when_there_is_a_fix(self):
+        assert gps_text(status()) == "GPS: 51.2345, 6.7654"
+
+    def test_says_no_fix_without_one(self):
+        no_fix = {"fix": False, "mode": 1, "latitude": None, "longitude": None}
+        assert gps_text(status(gps=no_fix)) == "GPS: no fix"
+
+    def test_a_mode_without_coordinates_is_still_no_fix(self):
+        """gpsd can report a mode before it has a position."""
+        assert gps_text(status(gps={"fix": True, "mode": 2,
+                                    "latitude": None,
+                                    "longitude": None})) == "GPS: no fix"
+
+    def test_southern_and_western_positions_still_fit(self):
+        wide = status(gps={"fix": True, "mode": 3, "latitude": -33.8688,
+                           "longitude": -151.2093})
+        assert len(gps_text(wide)) <= PANEL_COLUMNS
 
 
-def test_shows_wifi_and_ble_counts():
-    text = joined(wifi_aps=42, ble_devices=5)
-    assert "42" in text and "5" in text
+class TestBody:
+    def test_counts_wifi_and_ble_seen_and_saved(self):
+        lines = body_lines(status(wifi_aps=42, wifi_saved=18,
+                                  ble_devices=5, ble_saved=2))
+        assert "WIFI: 42 (18 saved)" in lines
+        assert "BLE: 5 (2 saved)" in lines
 
+    def test_saving_nothing_is_visible(self):
+        """Without a GPS fix nothing is written, and the panel should say so
+        rather than implying the sightings were captured."""
+        lines = body_lines(status(wifi_aps=42, wifi_saved=0))
+        assert "WIFI: 42 (0 saved)" in lines
 
-def test_shows_the_lan_ip_when_home():
-    assert "192.168.1.9" in joined(mode="home", ip="192.168.1.9")
+    def test_counts_fit_the_panel_at_implausible_scale(self):
+        lines = body_lines(status(wifi_aps=99999, wifi_saved=99999,
+                                  ble_devices=99999, ble_saved=99999))
+        for line in lines:
+            assert len(line) <= PANEL_COLUMNS
 
+    def test_shows_the_activity(self):
+        assert "Status: scanning" in body_lines(status(activity="scanning"))
+        assert "Status: uploading" in body_lines(status(activity="uploading"))
 
-def test_shows_pending_upload_total_in_the_field():
-    # Six captures waiting across services should surface as a number to upload.
-    assert "6" in joined(pending={"wigle": 2, "wdgwars": 2, "wardrift": 2})
+    def test_activity_defaults_to_idle(self):
+        assert activity_text({}) == "idle"
+        assert "Status: idle" in body_lines(status(activity=None))
 
+    def test_survives_a_sparse_status(self):
+        """A status taken before the first scan must still render."""
+        lines = body_lines({})
+        assert isinstance(lines, list) and lines
+        assert "WIFI: 0 (0 saved)" in lines and "BLE: 0 (0 saved)" in lines
 
-def test_survives_a_sparse_status():
-    # A status taken before the first scan must still render without raising.
-    lines = status_lines({"mode": "field"})
-    assert isinstance(lines, list) and lines
+    def test_every_line_fits_the_panel(self):
+        for line in body_lines(status()):
+            assert len(line) <= PANEL_COLUMNS
+
+    def test_fits_the_panel_height(self):
+        """Header plus body at 16px from y=2 must stay inside 122px."""
+        lines = 1 + len(body_lines(status()))
+        assert 2 + lines * 16 <= 122
 
 
 class WedgedPanel:
@@ -128,7 +165,6 @@ class TestBackgroundDisplay:
         try:
             screen.render(status())
             assert panel.entered.wait(timeout=5), "worker never started drawing"
-            # The panel is now stuck inside render(); the caller must still fly.
             for _ in range(100):
                 screen.render(status())
         finally:
@@ -153,14 +189,14 @@ class TestBackgroundDisplay:
         screen = BackgroundDisplay(panel)
         screen.start()
         try:
-            for rows in range(50):
-                screen.render(status(rows=rows))
+            for seen in range(50):
+                screen.render(status(wifi_aps=seen))
             screen.stop(timeout=5)
         finally:
             screen.stop(timeout=1)
         assert panel.drawn, "nothing was drawn at all"
         assert len(panel.drawn) <= 50
-        assert panel.drawn[-1]["rows"] == 49
+        assert panel.drawn[-1]["wifi_aps"] == 49
 
     def test_stop_sleeps_a_healthy_panel(self):
         """Leaving the panel un-slept across a reboot is what makes the next

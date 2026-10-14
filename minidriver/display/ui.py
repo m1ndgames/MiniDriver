@@ -16,48 +16,57 @@ import threading
 log = logging.getLogger(__name__)
 
 
-def _gps_line(gps: dict) -> str:
-    gps = gps or {}
-    if not gps.get("fix"):
-        return "GPS: no fix"
-    label = {2: "2D", 3: "3D"}.get(gps.get("mode"), "fix")
-    return f"GPS: {label} {gps.get('sats_used', 0)}/{gps.get('sats_seen', 0)} sats"
+def connection_text(status: dict) -> str:
+    """Top left: whether the box is on a network and reachable."""
+    return "connected" if (status or {}).get("connected") else "not connected"
 
 
-def _battery_tag(battery) -> str:
-    """The battery marker for the header, blank when there is no UPS to read.
+def battery_text(status: dict) -> str:
+    """Top right: the battery level, blank when there is no UPS to read.
 
     A bare "+" means charging: the panel is one-bit monochrome, so a single
-    character costs far less width than a word and reads at a glance.
+    character costs far less width than a word and still reads at a glance.
     """
-    percent = (battery or {}).get("percent")
+    battery = (status or {}).get("battery") or {}
+    percent = battery.get("percent")
     if percent is None:
         return ""
-    return f"  {'+' if (battery or {}).get('charging') else ''}{percent}%"
+    return f"{'+' if battery.get('charging') else ''}{percent}%"
 
 
-def status_lines(status: dict) -> list:
-    """The lines to draw for a status snapshot. Tolerates a sparse status taken
-    before the first scan -- every field is read with a default."""
+def gps_text(status: dict) -> str:
+    """The position itself when there is a fix -- it is the one number worth
+    reading off the panel mid-drive, and it doubles as proof the survey is
+    recording, since nothing is written without a fix."""
+    gps = (status or {}).get("gps") or {}
+    latitude, longitude = gps.get("latitude"), gps.get("longitude")
+    if not gps.get("fix") or latitude is None or longitude is None:
+        return "GPS: no fix"
+    # Four decimals is about 11m: finer would not fit and would not be read.
+    return f"GPS: {latitude:.4f}, {longitude:.4f}"
+
+
+def activity_text(status: dict) -> str:
+    return str((status or {}).get("activity") or "idle")
+
+
+def body_lines(status: dict) -> list:
+    """The lines under the header. Blanks are kept so spacing stays uniform."""
     status = status or {}
-    mode = str(status.get("mode", "field")).upper()
-    lines = [f"MiniDriver  {mode}{_battery_tag(status.get('battery'))}",
-             _gps_line(status.get("gps"))]
+    return [
+        "",
+        # Seen and saved both, because nothing is written without a GPS fix:
+        # "42 (0 saved)" says the radio is fine and the GPS is not.
+        f"WIFI: {status.get('wifi_aps', 0)} ({status.get('wifi_saved', 0)} saved)",
+        f"BLE: {status.get('ble_devices', 0)} ({status.get('ble_saved', 0)} saved)",
+        gps_text(status),
+        "",
+        f"Status: {activity_text(status)}",
+    ]
 
-    lines.append(f"WiFi: {status.get('wifi_aps', 0)}   "
-                 f"BLE: {status.get('ble_devices', 0)}")
-    lines.append(f"rows: {status.get('rows', 0)}")
 
-    if status.get("mode") == "home":
-        last = status.get("last_upload")
-        lines.append(f"upload: {last}" if last else "upload: ready")
-        lines.append(f"IP: {status.get('ip') or '...'}")
-    else:
-        pending = status.get("pending") or {}
-        waiting = sum(int(v or 0) for v in pending.values())
-        lines.append(f"pending: {waiting}")
-
-    return lines
+LINE_HEIGHT = 16
+MARGIN = 4
 
 
 class Display:
@@ -68,10 +77,15 @@ class Display:
     and swallowed -- the box must keep capturing with a dark screen.
     """
 
-    def __init__(self, rotate: int = 0):
+    def __init__(self, rotate: int = 0, full_refresh_every: int = 20):
         self.rotate = rotate
+        # Partial updates accumulate ghosting, so a full refresh is forced
+        # periodically to clear it. At the daemon's 30s cadence the default is
+        # roughly every ten minutes.
+        self.full_refresh_every = max(1, int(full_refresh_every))
         self._epd = None
         self._font = None
+        self._since_full = None     # None until a base image has been set
 
     def _ensure(self) -> bool:
         if self._epd is not None:
@@ -93,23 +107,53 @@ class Display:
             self._epd = None
             return False
 
+    def _width_of(self, draw, text: str) -> float:
+        """Rendered width of *text*, for right-aligning the battery."""
+        try:
+            return draw.textlength(text, font=self._font)
+        except Exception:                                  # noqa: BLE001
+            # Pillow too old for textlength: the font is monospace, so an
+            # estimate is close enough to keep the text on the panel.
+            return len(text) * 8.4
+
+    def _compose(self, status: dict):
+        from PIL import Image, ImageDraw
+        # The panel's native buffer is width=height_px; draw landscape and let
+        # the driver orient it.
+        width, height = self._epd.height, self._epd.width
+        image = Image.new("1", (width, height), 0xFF)
+        draw = ImageDraw.Draw(image)
+
+        draw.text((MARGIN, 2), connection_text(status), font=self._font, fill=0)
+        right = battery_text(status)
+        if right:
+            x = width - MARGIN - self._width_of(draw, right)
+            draw.text((x, 2), right, font=self._font, fill=0)
+
+        y = 2 + LINE_HEIGHT
+        for line in body_lines(status):
+            if line:
+                draw.text((MARGIN, y), line, font=self._font, fill=0)
+            y += LINE_HEIGHT
+
+        if self.rotate:
+            image = image.rotate(self.rotate, expand=False)
+        return image
+
     def render(self, status: dict) -> None:
         if not self._ensure():
             return
         try:
-            from PIL import Image, ImageDraw
-            # The panel's native buffer is width=height_px; draw landscape and
-            # let the driver orient it.
-            width, height = self._epd.height, self._epd.width
-            image = Image.new("1", (width, height), 0xFF)
-            draw = ImageDraw.Draw(image)
-            y = 2
-            for line in status_lines(status):
-                draw.text((4, y), line, font=self._font, fill=0)
-                y += 16
-            if self.rotate:
-                image = image.rotate(self.rotate, expand=False)
-            self._epd.display(self._epd.getbuffer(image))
+            buffer = self._epd.getbuffer(self._compose(status))
+            # The first frame, and every full_refresh_every-th one, is written
+            # as a new base image: that is a full refresh, which both re-bases
+            # the partial updates and clears their ghosting.
+            if self._since_full is None or self._since_full >= self.full_refresh_every:
+                self._epd.displayPartBaseImage(buffer)
+                self._since_full = 0
+            else:
+                self._epd.displayPartial(buffer)
+            self._since_full += 1
         except Exception:                                  # noqa: BLE001
             log.exception("could not draw the panel")
 
