@@ -26,11 +26,13 @@ CAPTURE_NAME = "survey.wiglewifi.csv"
 SERVICES = ("wigle", "wdgwars", "wardrift")
 
 
-def build_status(mode, gps, aps, ble, rows, pending, last_upload, ip) -> dict:
+def build_status(mode, gps, aps, ble, rows, pending, last_upload, ip,
+                 battery=None) -> dict:
     """The status snapshot the display renders. Pure so it is easy to check."""
     gps = gps or {}
     return {
         "mode": mode,
+        "battery": battery,
         "gps": {"fix": bool(gps.get("fix") or gps.get("mode", 0) >= 2),
                 "mode": gps.get("mode", 0),
                 "sats_used": gps.get("sats_used", gps.get("satellites_used", 0)),
@@ -52,7 +54,7 @@ def session_name(now_wall: float = None) -> str:
 
 class Daemon:
     def __init__(self, cfg, station, ble, machine, ledger, client_factory,
-                 gps_read, display=None):
+                 gps_read, display=None, battery_read=None):
         self.cfg = cfg
         self.station = station
         self.ble = ble
@@ -60,6 +62,7 @@ class Daemon:
         self.ledger = ledger
         self._client_for = client_factory
         self._gps_read = gps_read
+        self._battery_read = battery_read
         self.display = display
 
         self.data_root = Path(cfg.get("paths", {}).get("data_dir",
@@ -186,11 +189,15 @@ class Daemon:
             self.survey.record(self.ble.snapshot(), self.gps, now_wall, now_mono)
 
     def status(self) -> dict:
+        # Read only when a snapshot is wanted, which is the panel's refresh
+        # cadence rather than every scan.
+        battery = self._battery_read() if self._battery_read else None
         return build_status(self.machine.mode, self.gps, self.aps,
                             self.ble.snapshot() if self._ble_enabled else [],
                             self.survey.rows if self.survey else 0,
                             self.pending, self.last_upload,
-                            self.ip if self.machine.mode == HOME else None)
+                            self.ip if self.machine.mode == HOME else None,
+                            battery=battery)
 
     # ---------------------------------------------------------------------- run
     def run(self) -> None:
