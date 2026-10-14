@@ -32,12 +32,19 @@ log = logging.getLogger(__name__)
 SOCKET_PATH = "/tmp/pisugar-server.sock"
 TIMEOUT = 2.0
 
-# Below this, shut down. The cell browned the Pi out at roughly 3.5V, and a
-# clean shutdown needs time to run, so the guard sits above that. Our own curve
-# puts 3.55V at about 7% remaining.
-DEFAULT_SHUTDOWN_VOLTS = 3.55
+# Below this, shut down.
+#
+# Raised from 3.55V after it failed in the field: the guard ran at 00:43:45,
+# found the cell above threshold, and the Pi was dead by 00:45:43 -- the
+# filesystem needed orphan recovery again. A LiPo falls off a cliff below about
+# 3.6V under load, and a scan burst sags it further, so by the time a quiet
+# reading shows 3.55V there is no time left to shut down in. Erring high costs
+# some capacity; erring low costs the card.
+DEFAULT_SHUTDOWN_VOLTS = 3.65
 # A WiFi scan burst sags the rail briefly; one low reading is not a flat cell.
-CONFIRM_DELAY = 20.0
+# Short, because on that cliff twenty seconds is a meaningful part of what is
+# left.
+CONFIRM_DELAY = 10.0
 
 # An RTC reading older than this is not believable and must not be used to set
 # the clock -- a PiSugar that has never been set reports 2020, and seeding that
@@ -98,6 +105,14 @@ def low_battery(threshold: float, runner=None, sleep=None) -> int:
     sleep = sleep or __import__("time").sleep
 
     status = _read_battery()
+    # Logged every run, healthy or not: the journal is persistent, so this is
+    # what lets the threshold be tuned from a real discharge curve rather than
+    # guessed at. Guessing it is what let the last one through.
+    if status:
+        log.info("cell %.3fV (%s%%)%s", status.get("volts") or 0.0,
+                 status.get("percent"),
+                 " on charge" if status.get("charging")
+                 or status.get("plugged") else "")
     if not should_shut_down(status, threshold):
         return 0
     log.warning("cell at %.3fV, below %.2fV; confirming before shutting down",

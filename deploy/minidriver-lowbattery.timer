@@ -2,11 +2,12 @@
 Description=Check the battery often enough to stop before the cell collapses
 
 [Timer]
-# Every two minutes. The cell falls off a cliff at the bottom of its curve, and
+# Every minute. Two minutes was not enough: a run found the cell healthy and
+# the box was dead 118 seconds later. The cell falls off a cliff at the bottom of its curve, and
 # the check itself re-reads after a delay before acting, so a long interval
 # risks arriving after the brownout rather than before it.
-OnBootSec=2min
-OnUnitActiveSec=2min
+OnBootSec=1min
+OnUnitActiveSec=1min
 AccuracySec=15s
 Unit=minidriver-lowbattery.service
 

@@ -202,6 +202,7 @@ class Daemon:
         self._presses_seen = self._presses
         self.page = ui.NEXT_PAGE.get(self.page, ui.STATUS)
         self._page_at = now_mono
+        log.info("button: panel page -> %s", self.page)
         return True
 
     def _expire_page(self, now_mono: float) -> bool:
@@ -211,6 +212,8 @@ class Daemon:
         if now_mono - self._page_at < self._page_timeout:
             return False
         self.page = ui.BLANK
+        log.info("panel idle for %.0fs; back to the blank page",
+                 self._page_timeout)
         return True
 
     def _refresh_panel(self) -> None:

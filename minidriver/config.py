@@ -56,7 +56,7 @@ DEFAULTS: dict = {
         # end that its own safe_shutdown_level never fires -- the Pi browned out
         # while that gauge still read ~30%. The guard sits above the brownout
         # point because a clean shutdown needs time to run.
-        "shutdown_volts": 3.55,
+        "shutdown_volts": 3.65,
     },
     "ble": {
         # Scan Bluetooth LE advertisements on the internal radio and fold them

@@ -58,7 +58,7 @@ battery:
   # that its own safe_shutdown_level never fires -- this box browned out while
   # that gauge still read ~30%, and the filesystem needed recovery afterwards.
   # The guard sits above the brownout point because shutting down takes time.
-  shutdown_volts: 3.55
+  shutdown_volts: 3.65
 
 ble:
   # Scan Bluetooth LE advertisements on the internal radio and fold them into the
