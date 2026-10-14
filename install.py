@@ -33,6 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -148,12 +149,61 @@ def mask_modemmanager():
         run(["systemctl", "mask", "ModemManager"], capture_output=True)
 
 
+def gps_on_serial0() -> bool:
+    """Whether a GPS HAT looks present on the Pi's UART.
+
+    Only a guess, but a cheap one: the UART exists whenever enable_uart is set,
+    attached or not, so presence of the device node proves nothing. A HAT that
+    is actually talking shows up as readable NMEA.
+    """
+    port = "/dev/serial0"
+    if not Path(port).exists():
+        return False
+    descriptor = None
+    try:
+        # O_NONBLOCK and O_NOCTTY matter: opening a tty can otherwise block
+        # waiting for carrier detect, and the installer must never hang on a
+        # dangling UART. O_NONBLOCK also means read() returns None rather than
+        # waiting, so the loop polls to a deadline instead.
+        descriptor = os.open(port, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+        heard = b""
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                heard += os.read(descriptor, 256) or b""
+            except BlockingIOError:
+                pass
+            if b"$G" in heard:          # any NMEA talker: GP, GN, GL, GB
+                return True
+            time.sleep(0.1)
+        return False
+    except OSError:
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def configure_gpsd():
+    """Point gpsd at the GPS, and at nothing else.
+
+    Listing /dev/serial0 when no HAT is attached is not harmless. With the UART
+    empty and a USB dongle plugged in, gpsd manages two devices, and the
+    resulting mix made it report 0,0 for a receiver that was computing a
+    perfectly good position -- clients even error with "No path specified in
+    DEVICE, but multiple devices are attached". Hours went into blaming the
+    dongle for that. So the UART is listed only when something is actually
+    talking on it; USBAUTO picks up a dongle either way.
+    """
     defaults = Path("/etc/default/gpsd")
+    devices = "/dev/serial0" if gps_on_serial0() else ""
+    print(f"    serial0 {'has a GPS talking on it' if devices else 'is silent'}"
+          f"; DEVICES={devices!r}")
     defaults.write_text(
         "# Managed by minidriver install.\n"
-        '# The L76K HAT is on /dev/serial0; USBAUTO picks up a USB dongle too.\n'
-        'DEVICES="/dev/serial0"\n'
+        "# Only devices that actually carry a GPS belong here: an empty UART\n"
+        "# alongside a USB dongle makes gpsd report 0,0 for a working receiver.\n"
+        f'DEVICES="{devices}"\n'
         'USBAUTO="true"\n'
         'GPSD_OPTIONS="-n"\n'
         'START_DAEMON="true"\n')
