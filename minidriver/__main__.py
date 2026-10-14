@@ -91,8 +91,15 @@ def main(argv=None) -> int:
         log.info("shutting down")
         daemon.stop()
 
+    def next_page(*_):
+        # The PiSugar button's shell runs `systemctl kill -s USR1
+        # minidriver.service`. A signal keeps the press instant: spawning a
+        # Python process per press would cost about a second on this board.
+        daemon.next_page()
+
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGUSR1, next_page)
 
     log.info("minidriver starting; home networks: %s", home_ssids or "none set")
     try:

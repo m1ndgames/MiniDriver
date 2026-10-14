@@ -14,9 +14,9 @@ Layout:
 """
 import threading
 
+from minidriver.display import ui
 from minidriver.display.ui import (BackgroundDisplay, activity_text,
-                                   battery_text, body_lines, connection_text,
-                                   gps_text)
+                                   battery_text, connection_text, gps_text)
 
 # 250px at 14px DejaVu Sans Mono is about 29 characters.
 PANEL_COLUMNS = 29
@@ -98,53 +98,84 @@ class TestGpsLine:
         assert len(gps_text(wide)) <= PANEL_COLUMNS
 
 
-class TestBody:
-    def test_counts_wifi_and_ble_seen_and_saved(self):
-        lines = body_lines(status(wifi_aps=42, wifi_saved=18,
-                                  ble_devices=5, ble_saved=2))
+class TestPages:
+    def test_the_resting_page_draws_nothing(self):
+        """Page one is blank on purpose: a dark panel costs no refreshes and
+        makes it obvious the box is not being looked at."""
+        assert ui.page_lines(status(page=ui.BLANK)) == []
+
+    def test_the_button_toggles_the_two_content_pages(self):
+        assert ui.NEXT_PAGE[ui.BLANK] == ui.STATUS
+        assert ui.NEXT_PAGE[ui.STATUS] == ui.SCANNING
+        assert ui.NEXT_PAGE[ui.SCANNING] == ui.STATUS
+
+    def test_status_page_carries_the_four_subsystems(self):
+        lines = "\n".join(ui.page_lines(status(
+            page=ui.STATUS, connected=True, ssid="localhost_2G", rssi=-52,
+            ip="192.168.178.43", runtime="2h10",
+            battery={"percent": 38, "volts": 3.72})))
+        assert "Status:" in lines                       # what it is doing
+        assert "GPS:" in lines                          # position or search
+        assert "localhost_2G" in lines and "192.168.178.43" in lines
+        assert "3.72V" in lines and "38%" in lines and "2h10" in lines
+
+    def test_scanning_page_carries_counts_and_the_upload_backlog(self):
+        lines = "\n".join(ui.page_lines(status(
+            page=ui.SCANNING, wifi_aps=42, wifi_saved=18,
+            ble_devices=5, ble_saved=2, rows=318,
+            pending={"wigle": 2, "wdgwars": 1})))
         assert "WIFI: 42 (18 saved)" in lines
         assert "BLE: 5 (2 saved)" in lines
+        assert "to upload: 3" in lines
 
-    def test_saving_nothing_is_visible(self):
-        """Without a GPS fix nothing is written, and the panel should say so
-        rather than implying the sightings were captured."""
-        lines = body_lines(status(wifi_aps=42, wifi_saved=0))
-        assert "WIFI: 42 (0 saved)" in lines
+    def test_every_page_fits_the_panel(self):
+        wide = status(page=ui.STATUS, connected=True,
+                      ssid="a-very-long-network-name-indeed", rssi=-100,
+                      ip="192.168.178.200", runtime="12h59",
+                      battery={"percent": 100, "volts": 4.20})
+        for page in (ui.BLANK, ui.STATUS, ui.SCANNING):
+            wide["page"] = page
+            lines = ui.page_lines(wide)
+            assert 2 + len(lines) * 16 <= 122, f"{page} too tall"
+            for line in lines:
+                assert len(line) <= PANEL_COLUMNS, f"{page}: {line!r}"
 
-    def test_counts_fit_the_panel_at_implausible_scale(self):
-        lines = body_lines(status(wifi_aps=99999, wifi_saved=99999,
-                                  ble_devices=99999, ble_saved=99999))
-        for line in lines:
-            assert len(line) <= PANEL_COLUMNS
+    def test_power_line_prefers_voltage_and_flags_charging(self):
+        charging = ui.power_line(status(battery={"percent": 60, "volts": 3.85,
+                                                 "charging": True},
+                                        runtime="5h00"))
+        assert "3.85V" in charging and "chg" in charging
+        # Runtime is meaningless while charging, so it is not shown.
+        assert "5h00" not in charging
 
-    def test_shows_the_activity(self):
-        assert "Status: scanning" in body_lines(status(activity="scanning"))
-        assert "Status: uploading" in body_lines(status(activity="uploading"))
-        assert ("Status: waiting for gps"
-                in body_lines(status(activity="waiting for gps")))
+    def test_power_line_without_a_ups(self):
+        assert ui.power_line(status(battery=None)) == "Batt: no UPS"
+
+    def test_not_connected_says_so_rather_than_inventing_a_link(self):
+        assert ui.wifi_link_lines(status(connected=False)) == [
+            "WiFi: not connected"]
+
+
+class TestActivityAndSparseStatus:
+    def test_activity_defaults_to_idle(self):
+        assert activity_text({}) == "idle"
 
     def test_the_longest_activity_still_fits(self):
         line = f"Status: {activity_text(status(activity='waiting for gps'))}"
         assert len(line) <= PANEL_COLUMNS
 
-    def test_activity_defaults_to_idle(self):
-        assert activity_text({}) == "idle"
-        assert "Status: idle" in body_lines(status(activity=None))
-
-    def test_survives_a_sparse_status(self):
+    def test_pages_survive_a_sparse_status(self):
         """A status taken before the first scan must still render."""
-        lines = body_lines({})
-        assert isinstance(lines, list) and lines
-        assert "WIFI: 0 (0 saved)" in lines and "BLE: 0 (0 saved)" in lines
+        for page in (ui.BLANK, ui.STATUS, ui.SCANNING):
+            assert isinstance(ui.page_lines({"page": page}), list)
+        assert "WIFI: 0 (0 saved)" in ui.page_lines({"page": ui.SCANNING})
 
-    def test_every_line_fits_the_panel(self):
-        for line in body_lines(status()):
+    def test_counts_fit_the_panel_at_implausible_scale(self):
+        lines = ui.page_lines(status(page=ui.SCANNING, wifi_aps=99999,
+                                     wifi_saved=99999, ble_devices=99999,
+                                     ble_saved=99999, rows=999999))
+        for line in lines:
             assert len(line) <= PANEL_COLUMNS
-
-    def test_fits_the_panel_height(self):
-        """Header plus body at 16px from y=2 must stay inside 122px."""
-        lines = 1 + len(body_lines(status()))
-        assert 2 + lines * 16 <= 122
 
 
 class WedgedPanel:

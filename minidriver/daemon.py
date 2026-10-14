@@ -15,7 +15,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from minidriver import battery as battery_mod
 from minidriver import wifi
+from minidriver.display import ui
 from minidriver.gps import has_fix
 from minidriver.statemachine import FIELD, HOME, ModeMachine
 from minidriver.survey import SurveyLog
@@ -106,6 +108,19 @@ class Daemon:
         self.pending = {s: 0 for s in SERVICES}
         self._activity = None
         self._stop = threading.Event()
+        # Button presses are counted, not signalled through an Event. next_page
+        # runs in a signal handler on the main thread, and threading primitives
+        # take locks the main thread may already hold -- setting an Event from
+        # there can deadlock the process. A plain integer bump is atomic under
+        # CPython and safe; the loop notices it on its next tick.
+        self._presses = 0
+        self._presses_seen = 0
+
+        self.page = ui.BLANK
+        self._page_at = 0.0
+        self._page_timeout = float(cfg.get("display", {})
+                                   .get("page_timeout_seconds", 15.0))
+        self._runtime = battery_mod.RuntimeEstimate()
 
     # ---------------------------------------------------------------- lifecycle
     def start(self) -> None:
@@ -169,6 +184,34 @@ class Daemon:
             self._run_sweep()
         finally:
             self._activity = None
+
+    # --------------------------------------------------------------- display
+    def next_page(self) -> None:
+        """Record a button press.
+
+        Runs inside a signal handler, so it does the least possible: no locks,
+        no clock, no drawing. Everything else happens in apply_presses() on the
+        loop's own thread.
+        """
+        self._presses += 1
+
+    def apply_presses(self, now_mono: float) -> bool:
+        """Advance the page if the button was pressed since the last tick."""
+        if self._presses == self._presses_seen:
+            return False
+        self._presses_seen = self._presses
+        self.page = ui.NEXT_PAGE.get(self.page, ui.STATUS)
+        self._page_at = now_mono
+        return True
+
+    def _expire_page(self, now_mono: float) -> bool:
+        """Drop back to the resting page after the configured idle time."""
+        if self.page == ui.BLANK or self._page_timeout <= 0:
+            return False
+        if now_mono - self._page_at < self._page_timeout:
+            return False
+        self.page = ui.BLANK
+        return True
 
     def _refresh_panel(self) -> None:
         if self.display is None:
@@ -242,18 +285,45 @@ class Daemon:
                 self.survey.record(self.ble.snapshot(), self.gps, now_wall,
                                    now_mono))
 
+    def home_link(self):
+        """(ssid, rssi) of the home network we are on, from the last scan.
+
+        Taken from scan data we already hold rather than another subprocess:
+        the loop scans even at home, so the association's signal is already
+        there to be read.
+        """
+        if self.machine.mode != HOME:
+            return None, None
+        for ssid in sorted(self.machine.present):
+            for ap in self.aps.values():
+                if wifi.ssid(ap) == ssid:
+                    return ssid, ap.get("rssi")
+            return ssid, None
+        return None, None
+
     def status(self) -> dict:
         # Read only when a snapshot is wanted, which is the panel's refresh
         # cadence rather than every scan.
         battery = self._battery_read() if self._battery_read else None
-        return build_status(self.machine.mode, self.gps, self.aps,
-                            self.ble.snapshot() if self._ble_enabled else [],
-                            self.survey.rows if self.survey else 0,
-                            self.pending, self.last_upload,
-                            self.ip if self.machine.mode == HOME else None,
-                            battery=battery, activity=self._activity,
-                            wifi_saved=len(self.saved_wifi),
-                            ble_saved=len(self.saved_ble))
+        if battery:
+            self._runtime.observe(time.monotonic(), battery.get("percent"),
+                                  battery.get("charging")
+                                  or battery.get("plugged"))
+        ssid, rssi = self.home_link()
+        snapshot = build_status(self.machine.mode, self.gps, self.aps,
+                                self.ble.snapshot() if self._ble_enabled else [],
+                                self.survey.rows if self.survey else 0,
+                                self.pending, self.last_upload,
+                                self.ip if self.machine.mode == HOME else None,
+                                battery=battery, activity=self._activity,
+                                wifi_saved=len(self.saved_wifi),
+                                ble_saved=len(self.saved_ble))
+        snapshot["page"] = self.page
+        snapshot["ssid"] = ssid
+        snapshot["rssi"] = rssi
+        snapshot["runtime"] = battery_mod.format_runtime(
+            self._runtime.seconds_left())
+        return snapshot
 
     # ---------------------------------------------------------------------- run
     def run(self) -> None:
@@ -265,12 +335,21 @@ class Daemon:
         if notify:
             notify("READY=1")
         last_draw = 0.0
+        last_page = self.page
         try:
             while not self._stop.is_set():
                 self.poll()
                 now = time.monotonic()
-                if self.display is not None and now - last_draw >= refresh_gap:
+                # The page can change between ticks, from the button or from
+                # the idle timeout, and either has to redraw now rather than
+                # wait out the refresh cadence.
+                self.apply_presses(now)
+                self._expire_page(now)
+                page_changed = self.page != last_page
+                if self.display is not None and (
+                        page_changed or now - last_draw >= refresh_gap):
                     last_draw = now
+                    last_page = self.page
                     self.display.render(self.status())
                 if notify:
                     notify("WATCHDOG=1")

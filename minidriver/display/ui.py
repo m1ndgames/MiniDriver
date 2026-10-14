@@ -60,19 +60,87 @@ def activity_text(status: dict) -> str:
     return str((status or {}).get("activity") or "idle")
 
 
-def body_lines(status: dict) -> list:
-    """The lines under the header. Blanks are kept so spacing stays uniform."""
+BLANK, STATUS, SCANNING = "blank", "status", "scanning"
+# Blank is the resting page. Once woken, the button toggles the two content
+# pages; the inactivity timeout drops back to blank from wherever you are.
+NEXT_PAGE = {BLANK: STATUS, STATUS: SCANNING, SCANNING: STATUS}
+
+
+def satellites_text(status: dict) -> str:
+    """Fix quality, satellites and GPS time -- the detail page's GPS line."""
+    gps = (status or {}).get("gps") or {}
+    quality = {2: "2D", 3: "3D"}.get(gps.get("mode"), "--")
+    line = f"{quality} {gps.get('sats_used', 0)}/{gps.get('sats_seen', 0)}"
+    when = gps.get("time")
+    return f"{line}  {when}" if when else line
+
+
+def wifi_link_lines(status: dict) -> list:
+    """The home link, when there is one. Two lines so the IP has room."""
     status = status or {}
+    if not status.get("connected"):
+        return ["WiFi: not connected"]
+    ssid = status.get("ssid") or "?"
+    rssi = status.get("rssi")
+    signal = f" {rssi}dBm" if rssi is not None else ""
+    return [f"WiFi: {ssid}"[:29], f"  {status.get('ip') or '...'}{signal}"[:29]]
+
+
+def power_line(status: dict) -> str:
+    """Voltage, charge and estimated runtime in one line.
+
+    Voltage is shown alongside the percentage on purpose: the percentage is an
+    estimate from a curve, the voltage is measured, and when they disagree the
+    voltage is the one to believe.
+    """
+    battery = (status or {}).get("battery") or {}
+    percent = battery.get("percent")
+    if percent is None:
+        return "Batt: no UPS"
+    volts = battery.get("volts")
+    parts = [f"{volts:.2f}V" if volts is not None else "", f"{percent}%"]
+    if battery.get("charging"):
+        parts.append("chg")
+    elif status.get("runtime"):
+        parts.append(f"~{status['runtime']}")
+    return "Batt: " + " ".join(p for p in parts if p)
+
+
+def status_page(status: dict) -> list:
+    """Page 2: what the box is doing, and the state of its three subsystems."""
+    status = status or {}
+    return ([f"Status: {activity_text(status)}",
+             gps_text(status),
+             f"  {satellites_text(status)}"]
+            + wifi_link_lines(status)
+            + [power_line(status)])
+
+
+def scanning_page(status: dict) -> list:
+    """Page 3: what the survey has collected and what is waiting to go out."""
+    status = status or {}
+    pending = status.get("pending") or {}
+    waiting = sum(int(v or 0) for v in pending.values())
     return [
+        "Scanning",
         "",
         # Seen and saved both, because nothing is written without a GPS fix:
         # "42 (0 saved)" says the radio is fine and the GPS is not.
         f"WIFI: {status.get('wifi_aps', 0)} ({status.get('wifi_saved', 0)} saved)",
         f"BLE: {status.get('ble_devices', 0)} ({status.get('ble_saved', 0)} saved)",
-        gps_text(status),
-        "",
-        f"Status: {activity_text(status)}",
+        f"rows: {status.get('rows', 0)}",
+        f"to upload: {waiting}",
     ]
+
+
+def page_lines(status: dict) -> list:
+    """The lines for whichever page is showing. Blank draws nothing at all."""
+    page = (status or {}).get("page", BLANK)
+    if page == STATUS:
+        return status_page(status)
+    if page == SCANNING:
+        return scanning_page(status)
+    return []
 
 
 LINE_HEIGHT = 16
@@ -134,14 +202,8 @@ class Display:
         image = Image.new("1", (width, height), 0xFF)
         draw = ImageDraw.Draw(image)
 
-        draw.text((MARGIN, 2), connection_text(status), font=self._font, fill=0)
-        right = battery_text(status)
-        if right:
-            x = width - MARGIN - self._width_of(draw, right)
-            draw.text((x, 2), right, font=self._font, fill=0)
-
-        y = 2 + LINE_HEIGHT
-        for line in body_lines(status):
+        y = 2
+        for line in page_lines(status):
             if line:
                 draw.text((MARGIN, y), line, font=self._font, fill=0)
             y += LINE_HEIGHT

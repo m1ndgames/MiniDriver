@@ -108,6 +108,59 @@ def to_status(values: dict):
     }
 
 
+class RuntimeEstimate:
+    """How long the cell has left, from how fast it is actually falling.
+
+    A single reading says nothing about rate, so this keeps a rolling window of
+    samples. Older ones are dropped so the estimate follows the current load
+    rather than averaging over a whole session -- scanning hard and sitting idle
+    drain at quite different rates.
+
+    Returns None rather than guessing: on charge, with too little history, or
+    while the level is flat or rising. A confident wrong number on a panel you
+    plan a walk around is worse than no number, which this box has already
+    demonstrated the hard way.
+    """
+
+    WINDOW = 1800.0          # only the last half hour informs the rate
+    MIN_SPAN = 300.0         # and at least five minutes of it
+    MIN_DROP = 1.0           # with a fall big enough to not be noise
+
+    def __init__(self):
+        self._samples = []
+
+    def observe(self, now: float, percent, charging: bool = False) -> None:
+        if charging or percent is None:
+            # Charging invalidates the trend entirely; start again when it ends.
+            self._samples = []
+            return
+        self._samples.append((now, float(percent)))
+        self._samples = [(t, p) for t, p in self._samples
+                         if now - t <= self.WINDOW]
+
+    def seconds_left(self):
+        """Estimated seconds of runtime, or None when it cannot be known."""
+        if len(self._samples) < 2:
+            return None
+        (first_at, first_pc), (last_at, last_pc) = (self._samples[0],
+                                                    self._samples[-1])
+        span = last_at - first_at
+        drop = first_pc - last_pc
+        if span < self.MIN_SPAN or drop < self.MIN_DROP:
+            return None
+        return max(0.0, last_pc / (drop / span))
+
+
+def format_runtime(seconds) -> str:
+    """A compact runtime for the panel, blank when there is no estimate."""
+    if seconds is None:
+        return ""
+    minutes = int(seconds // 60)
+    if minutes >= 60:
+        return f"{minutes // 60}h{minutes % 60:02d}"
+    return f"{minutes}m"
+
+
 def _ask(path: str, timeout: float) -> str:
     """One connection, one request per field, replies concatenated."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
