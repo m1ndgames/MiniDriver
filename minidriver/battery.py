@@ -20,7 +20,54 @@ SOCKET_PATH = "/tmp/pisugar-server.sock"
 # the survey a fraction of a second, not a watchdog restart.
 TIMEOUT = 0.5
 
-FIELDS = ("battery", "battery_charging", "battery_power_plugged")
+FIELDS = ("battery", "battery_v", "battery_charging", "battery_power_plugged")
+
+# Cell voltage to remaining charge, interpolated between points.
+#
+# PiSugar's own percentage is not used, because it is badly optimistic at the
+# low end -- exactly where it matters. Measured on this box: it reported 71.6%
+# at 3.755V and 50.3% at 3.589V, and the Pi browned out while it still claimed
+# ~30%. An abrupt power cut is what this is here to prevent: the one that
+# happened left the filesystem needing orphan recovery on the next boot.
+#
+# This curve is deliberately pessimistic below 3.7V so that "low" is reached
+# before the cell actually collapses. It is an approximation either way --
+# voltage under load sits below the resting voltage, and the 3.7-3.9V plateau
+# makes any voltage-based estimate coarse in the middle. Being coarse in the
+# middle and honest at the bottom is the right trade for a box that must shut
+# down cleanly.
+VOLTAGE_CURVE = (
+    (4.15, 100.0),
+    (4.05, 90.0),
+    (3.95, 80.0),
+    (3.87, 70.0),
+    (3.80, 60.0),
+    (3.75, 50.0),
+    (3.71, 40.0),
+    (3.67, 30.0),
+    (3.63, 20.0),
+    (3.58, 10.0),
+    (3.50, 5.0),
+    (3.40, 0.0),
+)
+
+
+def percent_from_voltage(volts):
+    """Remaining charge for a cell voltage, or None if it is not a number."""
+    try:
+        volts = float(volts)
+    except (TypeError, ValueError):
+        return None
+    if volts >= VOLTAGE_CURVE[0][0]:
+        return 100.0
+    if volts <= VOLTAGE_CURVE[-1][0]:
+        return 0.0
+    for (high_v, high_pc), (low_v, low_pc) in zip(VOLTAGE_CURVE,
+                                                  VOLTAGE_CURVE[1:]):
+        if volts >= low_v:
+            span = high_v - low_v
+            return low_pc + (volts - low_v) / span * (high_pc - low_pc)
+    return 0.0
 
 
 def parse_reply(text: str) -> dict:
@@ -34,14 +81,28 @@ def parse_reply(text: str) -> dict:
 
 
 def to_status(values: dict):
-    """Shape raw replies into what the panel renders, or None without a level."""
+    """Shape raw replies into what the panel renders, or None without a level.
+
+    The level is computed from the cell voltage rather than taken from PiSugar's
+    reported percentage -- see VOLTAGE_CURVE for why. The gauge's own figure is
+    only a fallback for a UPS that reports no voltage.
+    """
+    values = values or {}
+    volts = values.get("battery_v")
+    percent = percent_from_voltage(volts)
+    if percent is None:
+        try:
+            percent = float(values.get("battery"))
+        except (TypeError, ValueError):
+            return None
     try:
-        percent = round(float((values or {}).get("battery")))
+        volts = float(volts)
     except (TypeError, ValueError):
-        return None
+        volts = None
     return {
-        # The fuel gauge can read a little outside 0-100; the panel should not.
-        "percent": max(0, min(100, percent)),
+        # An estimate can land slightly outside 0-100; the panel should not.
+        "percent": max(0, min(100, round(percent))),
+        "volts": volts,
         "charging": values.get("battery_charging") == "true",
         "plugged": values.get("battery_power_plugged") == "true",
     }

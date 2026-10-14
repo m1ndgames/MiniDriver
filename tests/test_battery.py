@@ -18,7 +18,39 @@ class TestParseReply:
         assert battery.parse_reply("no colon here\n\n") == {}
 
 
+class TestPercentFromVoltage:
+    def test_the_ends_of_the_curve_clamp(self):
+        assert battery.percent_from_voltage(4.30) == 100.0
+        assert battery.percent_from_voltage(3.20) == 0.0
+
+    def test_it_interpolates_between_points(self):
+        # Midway between (3.80, 60) and (3.75, 50).
+        assert 54 < battery.percent_from_voltage(3.775) < 56
+
+    def test_it_is_far_more_honest_than_the_gauge_at_the_low_end(self):
+        """Measured on the device: PiSugar claimed 50.3% at 3.589V and the Pi
+        browned out while it still read ~30%. Anything near 50 here would
+        reproduce the unclean shutdown that cost a filesystem recovery."""
+        assert battery.percent_from_voltage(3.589) < 20
+
+    def test_a_non_number_is_no_estimate(self):
+        assert battery.percent_from_voltage(None) is None
+        assert battery.percent_from_voltage("nope") is None
+
+
 class TestToStatus:
+    def test_the_level_comes_from_voltage_not_the_gauge(self):
+        """PiSugar reported 71.6% at this voltage; the cell was nearer half."""
+        status = battery.to_status({"battery": "71.56789",
+                                    "battery_v": "3.7547324"})
+        assert 45 <= status["percent"] <= 55
+        assert status["volts"] == 3.7547324
+
+    def test_it_falls_back_to_the_gauge_without_a_voltage(self):
+        status = battery.to_status({"battery": "75.18806"})
+        assert status["percent"] == 75
+        assert status["volts"] is None
+
     def test_rounds_the_percentage(self):
         assert battery.to_status({"battery": "75.18806"})["percent"] == 75
 
@@ -45,10 +77,11 @@ class TestToStatus:
 class TestRead:
     def test_returns_the_status_from_the_socket(self):
         def ask(path, timeout):
-            return "battery: 51.5\nbattery_charging: true\n"
+            return ("battery: 51.5\nbattery_v: 3.80\n"
+                    "battery_charging: true\n")
 
         assert battery.read(ask=ask) == {
-            "percent": 52, "charging": True, "plugged": False}
+            "percent": 60, "volts": 3.80, "charging": True, "plugged": False}
 
     def test_an_absent_ups_is_not_an_error(self):
         """No UPS fitted, or pisugar-server not running, is a normal state for
