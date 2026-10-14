@@ -31,17 +31,26 @@ def build_status(mode, gps, aps, ble, rows, pending, last_upload, ip,
                  battery=None, activity=None, wifi_saved=0, ble_saved=0) -> dict:
     """The status snapshot the display renders. Pure so it is easy to check."""
     gps = gps or {}
+    fix = has_fix(gps)
+    if activity:
+        current = activity
+    elif mode != FIELD:
+        current = "idle"
+    else:
+        # "scanning" would overstate it: without a fix nothing is written at
+        # all, so what the box is really doing is waiting on the receiver.
+        current = "scanning" if fix else "waiting for gps"
     return {
         "mode": mode,
         # Reachable means associated *and* addressed: an association with no
         # lease is not something you can SSH into.
         "connected": mode == HOME and bool(ip),
-        "activity": activity or ("scanning" if mode == FIELD else "idle"),
+        "activity": current,
         "battery": battery,
         # The same test the survey writer uses, so the panel can never claim a
         # fix the capture is rejecting -- a cold-starting receiver reports
         # mode 2 at 0,0, which is not a position.
-        "gps": {"fix": has_fix(gps),
+        "gps": {"fix": fix,
                 "mode": gps.get("mode", 0),
                 "latitude": gps.get("latitude"),
                 "longitude": gps.get("longitude"),

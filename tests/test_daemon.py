@@ -150,6 +150,23 @@ class TestBuildStatus:
         assert build_status(mode="home", activity="uploading",
                             **common)["activity"] == "uploading"
 
+    def test_scanning_without_a_fix_is_waiting_for_gps(self):
+        """Nothing is written without a fix, so "scanning" would overstate what
+        the box is achieving -- it is waiting on the receiver."""
+        no_fix = {"mode": 1, "latitude": None, "longitude": None,
+                  "sats_used": 0, "sats_seen": 9}
+        common = dict(aps={}, ble=[], rows=0, pending={}, last_upload=None,
+                      ip=None)
+        assert build_status(mode="field", gps=no_fix,
+                            **common)["activity"] == "waiting for gps"
+        # Null Island counts as no fix, so it reads the same way.
+        cold = {"mode": 2, "latitude": 0.0, "longitude": 0.0}
+        assert build_status(mode="field", gps=cold,
+                            **common)["activity"] == "waiting for gps"
+        # At home it is idle regardless of the receiver.
+        assert build_status(mode="home", gps=no_fix,
+                            **common)["activity"] == "idle"
+
 
 class TestFieldPoll:
     def test_a_field_poll_records_scanned_aps(self, tmp_path):

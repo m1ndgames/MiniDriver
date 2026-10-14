@@ -120,6 +120,12 @@ class TestBody:
     def test_shows_the_activity(self):
         assert "Status: scanning" in body_lines(status(activity="scanning"))
         assert "Status: uploading" in body_lines(status(activity="uploading"))
+        assert ("Status: waiting for gps"
+                in body_lines(status(activity="waiting for gps")))
+
+    def test_the_longest_activity_still_fits(self):
+        line = f"Status: {activity_text(status(activity='waiting for gps'))}"
+        assert len(line) <= PANEL_COLUMNS
 
     def test_activity_defaults_to_idle(self):
         assert activity_text({}) == "idle"
