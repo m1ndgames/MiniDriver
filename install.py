@@ -43,7 +43,12 @@ PREFIX = Path("/opt/minidriver")
 CONFIG_DIR = Path("/etc/minidriver")
 UNIT_DIR = Path("/etc/systemd/system")
 UNITS = ("minidriver.service", "minidriver-recover.service",
-         "minidriver-recover.timer")
+         "minidriver-recover.timer",
+         # PiSugar safety nets. Harmless on a box with no UPS: every task
+         # treats an unreachable socket as a normal state and exits quietly.
+         "minidriver-lowbattery.service", "minidriver-lowbattery.timer",
+         "minidriver-rtc-restore.service",
+         "minidriver-rtc-save.service", "minidriver-rtc-save.timer")
 SRC = Path(__file__).resolve().parent
 
 APT_PACKAGES = [
@@ -345,6 +350,12 @@ def install_service():
         # The recovery timer is what gets the box back when the daemon is the
         # broken part, so it is enabled and started independently of it.
         run(["systemctl", "enable", "--now", "minidriver-recover.timer"])
+        # The low-battery guard is what stops an abrupt power cut, and the RTC
+        # pair is what keeps timestamps sane across one; both run on their own
+        # timers so a wedged daemon cannot take them with it.
+        run(["systemctl", "enable", "--now", "minidriver-lowbattery.timer"])
+        run(["systemctl", "enable", "--now", "minidriver-rtc-save.timer"])
+        run(["systemctl", "enable", "minidriver-rtc-restore.service"])
 
 
 def main() -> int:

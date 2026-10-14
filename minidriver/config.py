@@ -50,6 +50,14 @@ DEFAULTS: dict = {
         # How long to wait for DHCP to produce an address once associated.
         "dhcp_timeout_seconds": 20.0,
     },
+    "battery": {
+        # Shut down cleanly below this cell voltage. Voltage is measured, unlike
+        # PiSugar's reported percentage, which is optimistic enough at the low
+        # end that its own safe_shutdown_level never fires -- the Pi browned out
+        # while that gauge still read ~30%. The guard sits above the brownout
+        # point because a clean shutdown needs time to run.
+        "shutdown_volts": 3.55,
+    },
     "ble": {
         # Scan Bluetooth LE advertisements on the internal radio and fold them
         # into the same survey. Off makes the box WiFi-only.

@@ -1,0 +1,8 @@
+[Unit]
+Description=Push the system clock into the PiSugar RTC
+After=pisugar-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/minidriver/.venv/bin/python -m minidriver.pisugar rtc-save
+User=root

@@ -1,0 +1,18 @@
+[Unit]
+Description=Seed the system clock from the PiSugar RTC
+# The Pi has no RTC of its own, so without this a boot with no network starts at
+# whatever the filesystem last recorded. Must run before chrony, so chrony
+# starts from something sane and only has to discipline it from there.
+After=pisugar-server.service
+Before=chrony.service systemd-timesyncd.service
+DefaultDependencies=no
+After=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/minidriver/.venv/bin/python -m minidriver.pisugar rtc-restore
+User=root
+
+[Install]
+WantedBy=sysinit.target

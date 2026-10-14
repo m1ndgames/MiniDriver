@@ -1,0 +1,10 @@
+[Unit]
+Description=MiniDriver low-battery shutdown guard
+# Deliberately independent of minidriver.service: this exists to shut the box
+# down cleanly, and a safety net must not depend on the thing it protects.
+After=pisugar-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/minidriver/.venv/bin/python -m minidriver.pisugar low-battery
+User=root

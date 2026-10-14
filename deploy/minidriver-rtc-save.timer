@@ -1,0 +1,17 @@
+[Unit]
+Description=Keep the PiSugar RTC up to date from the system clock
+
+[Timer]
+# Hourly is plenty: this only has to leave the RTC recent enough that the next
+# cold boot starts from a sane time, which chrony or GPS then corrects.
+#
+# One-way on purpose. PiSugar's own auto_rtc_sync does a continuous two-way
+# sync with `date -s`, which fights chrony for ownership of the clock -- so that
+# is disabled and this replaces it.
+OnBootSec=10min
+OnUnitActiveSec=1h
+AccuracySec=1min
+Unit=minidriver-rtc-save.service
+
+[Install]
+WantedBy=timers.target

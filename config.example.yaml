@@ -52,6 +52,14 @@ scan:
   # and goes back to scanning.
   home_lost_checks: 3
 
+battery:
+  # Shut down cleanly below this cell voltage (PiSugar UPS). Voltage is
+  # measured; PiSugar's reported percentage is optimistic enough at the low end
+  # that its own safe_shutdown_level never fires -- this box browned out while
+  # that gauge still read ~30%, and the filesystem needed recovery afterwards.
+  # The guard sits above the brownout point because shutting down takes time.
+  shutdown_volts: 3.55
+
 ble:
   # Scan Bluetooth LE advertisements on the internal radio and fold them into the
   # same survey. false makes the box WiFi-only.
