@@ -42,7 +42,10 @@ def scan_argv(iface: str) -> list:
 
 
 def wpa_supplicant_argv(iface: str, conf_path) -> list:
-    return ["wpa_supplicant", "-B", "-D", WPA_DRIVER, "-i", iface,
+    # -s sends its log to syslog, and so to the journal. Without it the
+    # supplicant is silent and an association that fails -- a wrong key, say --
+    # leaves no trace anywhere to explain why.
+    return ["wpa_supplicant", "-B", "-s", "-D", WPA_DRIVER, "-i", iface,
             "-c", str(conf_path)]
 
 
@@ -113,6 +116,14 @@ class Station:
         from pathlib import Path
         Path(self.supplicant_path).parent.mkdir(parents=True, exist_ok=True)
         write_supplicant_conf(networks, self.supplicant_path, country=country)
+        # Replace any supplicant already on this interface. A second instance
+        # simply fails to start, and the runner swallows that, so the old one
+        # carries on with its old config -- which made every attempt to switch
+        # networks a silent no-op. Releasing the lease matters just as much:
+        # wpa_supplicant can roam between configured networks by itself, and
+        # without a fresh DHCP round the box keeps an address from the network
+        # it just left and is unreachable on the one it joined.
+        self._stop_association()
         self._run(["ip", "link", "set", self.iface, "up"])
         self._run(wpa_supplicant_argv(self.iface, self.supplicant_path))
         self._run(self._dhcp + [self.iface])
@@ -137,4 +148,9 @@ class Station:
         # Release any DHCP lease first, then stop the supplicant for this iface.
         self._run(self._dhcp + ["-r", self.iface])
         self._run(["wpa_cli", "-i", self.iface, "terminate"])
+        # wpa_cli only reaches a supplicant that opened its control socket where
+        # we expect it. One started by something else -- or one whose socket went
+        # missing -- survives `terminate`, and a surviving supplicant is exactly
+        # what made every re-association a silent no-op, so finish the job by pid.
+        self._run(["pkill", "-f", f"wpa_supplicant.*-i *{self.iface}"])
         self._run(["ip", "addr", "flush", "dev", self.iface])

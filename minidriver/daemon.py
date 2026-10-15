@@ -29,6 +29,10 @@ CAPTURE_NAME = "survey.wiglewifi.csv"
 # Associating tears the link down and back up, so a flapping network must not
 # be able to make the box do it on every scan.
 REASSOCIATE_GAP = 30.0
+# A preferred network that cannot be joined -- a wrong key, an access point
+# that will not answer -- must not make the box tear down a working link every
+# half minute forever. Each failure doubles the wait, up to this.
+REASSOCIATE_MAX_GAP = 900.0
 SERVICES = ("wigle", "wdgwars", "wardrift")
 
 
@@ -111,6 +115,7 @@ class Daemon:
         self.pending = {s: 0 for s in SERVICES}
         self._activity = None
         self._associated_at = 0.0
+        self._assoc_failures = 0
         self._stop = threading.Event()
         # Button presses are counted, not signalled through an Event. next_page
         # runs in a signal handler on the main thread, and threading primitives
@@ -200,13 +205,28 @@ class Daemon:
         if wanted is None:
             return False
         if self.station.link_ssid() == wanted:
+            self._assoc_failures = 0
             return False
-        if now_mono - self._associated_at < REASSOCIATE_GAP:
+        if now_mono - self._associated_at < self.reassociate_gap():
             return False        # do not thrash a flapping link
         log.info("link is not on %s, which is in range and preferred; "
                  "re-associating", wanted)
         self._associate(now_mono)
+        if self.station.link_ssid() == wanted:
+            self._assoc_failures = 0
+        else:
+            self._assoc_failures += 1
+            log.warning("could not join %s (%d attempts); backing off to %.0fs."
+                        " A wrong key looks exactly like this -- psk_hash is"
+                        " salted with the SSID, so one derived for a different"
+                        " network never authenticates",
+                        wanted, self._assoc_failures, self.reassociate_gap())
         return True
+
+    def reassociate_gap(self) -> float:
+        """How long to wait before trying the preferred network again."""
+        return min(REASSOCIATE_GAP * (2 ** self._assoc_failures),
+                   REASSOCIATE_MAX_GAP)
 
     def _enter_home(self) -> None:
         if self.survey is not None:

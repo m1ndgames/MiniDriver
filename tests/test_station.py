@@ -58,10 +58,40 @@ class TestAssociate:
         # The config was written with the derived key (not the passphrase).
         text = Path(tmp_path / "wpa.conf").read_text()
         assert '"home"' in text and "12345678" not in text
-        # ...and wpa_supplicant was started before DHCP was asked for.
-        order = [c for c in runner.calls if any(
-            t in c for t in ("wpa_supplicant", "dhclient", "udhcpc", "dhcpcd"))]
+        # ...and wpa_supplicant was started before an address was asked for.
+        # The lease *release* comes earlier, as part of replacing the old
+        # association, so only the acquiring call counts here.
+        order = [c for c in runner.calls
+                 if ("wpa_supplicant" in c
+                     or (any(t in c for t in ("dhclient", "udhcpc", "dhcpcd"))
+                         and "-r" not in c))]
         assert "wpa_supplicant" in order[0]
+
+    def test_associate_replaces_a_running_supplicant(self, tmp_path):
+        """A second wpa_supplicant on the same interface just fails to start,
+        and the old one keeps its old config -- which made every attempt to
+        switch networks a silent no-op. The lease must go too, or the box keeps
+        an address from the network it just left."""
+        runner = Runner()
+        st = Station("wlan0", supplicant_path=tmp_path / "wpa.conf", runner=runner)
+        st.associate([{"ssid": "home", "psk": "12345678"}])
+        order = [" ".join(c) for c in runner.calls]
+        terminate = next(i for i, c in enumerate(order) if "wpa_cli" in c)
+        start = next(i for i, c in enumerate(order) if "wpa_supplicant" in c)
+        assert terminate < start, "must stop the old supplicant before starting"
+        assert any("-r" in c for c in runner.calls), "must release the lease"
+
+    def test_stopping_an_association_does_not_rely_on_the_control_socket(self, tmp_path):
+        """`wpa_cli terminate` only reaches a supplicant whose control socket is
+        where we expect it. A survivor keeps its old config and makes the next
+        association a silent no-op, so there has to be a kill by pid too."""
+        runner = Runner()
+        st = Station("wlan0", supplicant_path=tmp_path / "wpa.conf", runner=runner)
+        st.associate([{"ssid": "home", "psk": "12345678"}])
+        killed = [c for c in runner.calls if "pkill" in c]
+        assert killed, "must also stop the supplicant by pid"
+        assert any("wpa_supplicant" in a and "wlan0" in a
+                   for c in killed for a in c)
 
     def test_enter_field_tears_down_any_association(self, tmp_path):
         runner = Runner()

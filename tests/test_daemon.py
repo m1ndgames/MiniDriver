@@ -164,6 +164,31 @@ class TestFollowsTheBestNetwork:
         assert daemon.keep_home(1001.0) is False
         assert not station.associated
 
+    def test_a_network_it_cannot_join_backs_off(self, tmp_path):
+        """A wrong key looks exactly like this. Without backoff the box tears
+        down a working link every thirty seconds, forever."""
+        daemon, station = self.daemon_at_home(
+            tmp_path, linked="localhost_2G",
+            present=["localhost_2G", "iPhone von Florian"])
+        gaps = []
+        for attempt in range(4):
+            gaps.append(daemon.reassociate_gap())
+            # The link never reaches the hotspot, so every attempt fails.
+            daemon.keep_home(now_mono=10_000.0 * (attempt + 1))
+        assert gaps == sorted(gaps), "backoff must not shrink"
+        assert gaps[-1] > gaps[0], "backoff must grow after failures"
+        assert daemon.reassociate_gap() <= 900.0, "and must stay bounded"
+
+    def test_a_successful_join_clears_the_backoff(self, tmp_path):
+        daemon, station = self.daemon_at_home(
+            tmp_path, linked="localhost_2G",
+            present=["localhost_2G", "iPhone von Florian"])
+        daemon._assoc_failures = 4
+        station.linked = "iPhone von Florian"       # this time it lands
+        daemon.keep_home(10_000.0)
+        assert daemon._assoc_failures == 0
+        assert daemon.reassociate_gap() == 30.0
+
     def test_nothing_in_range_is_not_its_business(self, tmp_path):
         daemon, station = self.daemon_at_home(tmp_path, linked=None, present=[])
         assert daemon.keep_home(1000.0) is False
