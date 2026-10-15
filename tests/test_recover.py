@@ -70,3 +70,49 @@ class TestScanDumpArgv:
         EBUSY; `scan dump` reads the cache the daemon keeps warm."""
         argv = recover.scan_dump_argv("wlan0")
         assert argv == ["iw", "dev", "wlan0", "scan", "dump"]
+
+
+class Runner:
+    """Records argv it is asked to run."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, argv):
+        self.calls.append(argv)
+        return ""
+
+    def index(self, token):
+        for i, call in enumerate(self.calls):
+            if any(token in a for a in call):
+                return i
+        return None
+
+
+class TestRecover:
+    def test_stops_the_daemon_then_hands_the_radio_back(self):
+        runner = Runner()
+        recover.recover("wlan0", "because", runner=runner)
+        stop = runner.index("systemctl")
+        hand = runner.index("managed")
+        assert stop is not None and hand is not None and stop < hand
+
+    def test_clears_an_orphaned_supplicant_before_handing_over(self):
+        """wpa_supplicant runs with -B, so it outlives the daemon -- and a daemon
+        hung enough to need recovering is one systemd SIGKILLs, skipping its
+        teardown. An orphan still holding wlan0 leaves NetworkManager with a
+        device it cannot associate: managed, and still dark."""
+        runner = Runner()
+        recover.recover("wlan0", "because", runner=runner)
+        kill = runner.index("pkill")
+        hand = runner.index("managed")
+        assert kill is not None, "must clear a leftover supplicant"
+        assert kill < hand, "clearing has to happen before the handover"
+        assert runner.index("flush") < hand
+
+    def test_asks_networkmanager_to_connect(self):
+        """Managed again is usually enough for an autoconnect, but this is the
+        last thing between the box and an SD card reader, so ask outright."""
+        runner = Runner()
+        recover.recover("wlan0", "because", runner=runner)
+        assert ["nmcli", "device", "connect", "wlan0"] in runner.calls

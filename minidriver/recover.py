@@ -80,13 +80,35 @@ def reason(home_ssids, visible_ssids) -> str:
     return f"home network {found} is in range but there is no address"
 
 
+def clear_argvs(iface: str) -> list:
+    """Commands that leave *iface* free for NetworkManager to pick up.
+
+    Stopping the daemon is not enough. wpa_supplicant is started with -B, so it
+    is a separate process that outlives the daemon -- and a daemon hung badly
+    enough to need recovering is a daemon systemd ends up SIGKILLing, which skips
+    its teardown entirely. The orphan keeps the interface, so NetworkManager can
+    be handed a device it is then unable to associate: managed, and still dark.
+    """
+    return [
+        ["dhclient", "-r", iface],
+        ["pkill", "-f", f"wpa_supplicant.*-i *{iface}"],
+        ["ip", "addr", "flush", "dev", iface],
+    ]
+
+
 def recover(iface: str, why: str, runner=None) -> None:
     """Stop the daemon and give the radio back, so the box comes back on WiFi."""
     runner = runner or _runner
     log.error("recovering %s: %s -- stopping %s and handing the radio back to "
               "NetworkManager", iface, why, SERVICE)
     runner(["systemctl", "stop", SERVICE])
+    for argv in clear_argvs(iface):
+        runner(argv)
     nm.release(iface, runner=runner)
+    # Handing the device back normally triggers an autoconnect on its own; asking
+    # explicitly costs one call and covers the case where it does not. This is
+    # the last thing standing between the box and a trip to the SD card reader.
+    runner(["nmcli", "device", "connect", iface])
 
 
 def probe(iface: str, runner=None):
