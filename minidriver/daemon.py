@@ -26,6 +26,9 @@ from minidriver import sweep
 log = logging.getLogger(__name__)
 
 CAPTURE_NAME = "survey.wiglewifi.csv"
+# Associating tears the link down and back up, so a flapping network must not
+# be able to make the box do it on every scan.
+REASSOCIATE_GAP = 30.0
 SERVICES = ("wigle", "wdgwars", "wardrift")
 
 
@@ -107,6 +110,7 @@ class Daemon:
         self.last_upload = None
         self.pending = {s: 0 for s in SERVICES}
         self._activity = None
+        self._associated_at = 0.0
         self._stop = threading.Event()
         # Button presses are counted, not signalled through an Event. next_page
         # runs in a signal handler on the main thread, and threading primitives
@@ -161,13 +165,55 @@ class Daemon:
         self._open_session(now_wall)
         log.info("entering FIELD; new session %s", self.survey.path)
 
+    def preferred_visible(self):
+        """The highest-priority home network currently in range, or None.
+
+        wpa_supplicant prefers the larger `priority`, and so do we -- but it
+        only weighs them when it associates. Deciding this ourselves each scan
+        is what lets the box follow a hotspot appearing or disappearing.
+        """
+        best, best_priority = None, None
+        for entry in self._home_networks or []:
+            ssid = (entry or {}).get("ssid")
+            if ssid not in self.machine.present:
+                continue
+            priority = entry.get("priority") or 0
+            if best is None or priority > best_priority:
+                best, best_priority = ssid, priority
+        return best
+
+    def _associate(self, now_mono: float) -> None:
+        self.station.associate(self._home_networks, country=self._country)
+        self.ip = self.station.address()
+        self._associated_at = now_mono
+
+    def keep_home(self, now_mono: float) -> bool:
+        """Re-associate when the link is not on the best available network.
+
+        Covers two cases the mode machine cannot see, because neither changes
+        which SSIDs are *visible*: a higher-priority network appearing after we
+        joined a lesser one, and the joined network vanishing while another
+        stays in range. The second is the nastier -- the interface keeps its
+        address, so everything looks fine while nothing is reachable.
+        """
+        wanted = self.preferred_visible()
+        if wanted is None:
+            return False
+        if self.station.link_ssid() == wanted:
+            return False
+        if now_mono - self._associated_at < REASSOCIATE_GAP:
+            return False        # do not thrash a flapping link
+        log.info("link is not on %s, which is in range and preferred; "
+                 "re-associating", wanted)
+        self._associate(now_mono)
+        return True
+
     def _enter_home(self) -> None:
         if self.survey is not None:
             self.survey.close()
             self.survey = None
         log.info("home network in range; associating")
-        self.station.associate(self._home_networks, country=self._country)
-        self.ip = self.station.address()
+        self._associate(time.monotonic())
         self._sweep_uploads()
 
     # ------------------------------------------------------------------ uploads
@@ -275,6 +321,9 @@ class Daemon:
 
         if mode == FIELD:
             self._record(aps, now_wall, now_mono)
+        else:
+            # Already home: make sure we are on the best network in range.
+            self.keep_home(now_mono)
 
     def _record(self, aps, now_wall, now_mono) -> None:
         if self.survey is None:

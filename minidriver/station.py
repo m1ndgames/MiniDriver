@@ -46,6 +46,24 @@ def wpa_supplicant_argv(iface: str, conf_path) -> list:
             "-c", str(conf_path)]
 
 
+def link_argv(iface: str) -> list:
+    return ["iw", "dev", iface, "link"]
+
+
+_SSID_RE = re.compile(r"^\s*SSID:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def parse_link_ssid(text: str):
+    """The SSID actually associated, or None when the link is down.
+
+    An address is not proof of a link: when an access point goes away the
+    interface keeps its configured IP, so `ip addr` still looks healthy while
+    nothing can be reached. This is the honest check.
+    """
+    match = _SSID_RE.search(text or "")
+    return match.group(1) if match else None
+
+
 _INET_RE = re.compile(r"\binet (\d{1,3}(?:\.\d{1,3}){3})")
 
 
@@ -98,6 +116,10 @@ class Station:
         self._run(["ip", "link", "set", self.iface, "up"])
         self._run(wpa_supplicant_argv(self.iface, self.supplicant_path))
         self._run(self._dhcp + [self.iface])
+
+    def link_ssid(self):
+        """The SSID this interface is associated to, or None if it is not."""
+        return parse_link_ssid(self._run(link_argv(self.iface)))
 
     def address(self):
         """The interface's current IPv4 address, or None."""

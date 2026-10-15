@@ -16,11 +16,13 @@ import time
 
 from minidriver import nm, wifi
 from minidriver.config import DEFAULT_CONFIG_PATH, load_config
-from minidriver.station import parse_ipv4
+from minidriver.station import link_argv, parse_ipv4, parse_link_ssid
 
 log = logging.getLogger(__name__)
 
 SERVICE = "minidriver.service"
+# Sentinel for "the link is down", distinct from "we did not look".
+DOWN = False
 # Long enough to cover associating plus the DHCP timeout, so a box that is simply
 # mid-handshake is never mistaken for a stranded one.
 CONFIRM_DELAY = 30.0
@@ -39,16 +41,24 @@ def address_argv(iface: str) -> list:
     return ["ip", "-o", "-4", "addr", "show", "dev", iface]
 
 
-def stranded(home_ssids, visible_ssids, address) -> bool:
+def stranded(home_ssids, visible_ssids, address, linked=None) -> bool:
     """Is the box unable to get itself back on the network?
 
     With no home network configured the daemon can never make the box reachable,
     so NetworkManager is the only way back in regardless of what is in range.
+
+    `linked` is the SSID actually associated, or None when the link is down. An
+    address alone is NOT proof of a link: when an access point disappears the
+    interface keeps its configured IP, so everything looks healthy while nothing
+    is reachable. A phone hotspot being switched off, with home WiFi still in
+    range, got straight past an earlier version of this check -- so a link known
+    to be down counts as having no address.
     """
+    reachable = bool(address) and linked is not DOWN
     if not home_ssids:
-        return not address
+        return not reachable
     in_range = bool(set(home_ssids) & set(visible_ssids or []))
-    return in_range and not address
+    return in_range and not reachable
 
 
 def _runner(argv) -> str:
@@ -80,11 +90,12 @@ def recover(iface: str, why: str, runner=None) -> None:
 
 
 def probe(iface: str, runner=None):
-    """What the interface looks like right now: (visible SSIDs, address)."""
+    """What the interface looks like now: (visible SSIDs, address, linked)."""
     runner = runner or _runner
     address = parse_ipv4(runner(address_argv(iface)))
+    linked = parse_link_ssid(runner(link_argv(iface))) or DOWN
     visible = wifi.visible_ssids(wifi.parse_scan(runner(scan_dump_argv(iface))))
-    return visible, address
+    return visible, address, linked
 
 
 def main(argv=None) -> int:
@@ -96,9 +107,9 @@ def main(argv=None) -> int:
     home_ssids = [n.get("ssid") for n in network.get("home_networks", [])
                   if n.get("ssid")]
 
-    visible, address = probe(iface)
-    if not stranded(home_ssids, visible, address):
-        log.info("%s healthy (address=%s, home in range=%s)", iface, address,
+    visible, address, linked = probe(iface)
+    if not stranded(home_ssids, visible, address, linked):
+        log.info("%s healthy (address=%s, link=%s, home in range=%s)", iface, address, linked or "down",
                  bool(set(home_ssids) & set(visible)))
         return 0
 
@@ -109,8 +120,8 @@ def main(argv=None) -> int:
     log.warning("%s looks stranded; re-checking in %.0fs before acting",
                 iface, CONFIRM_DELAY)
     time.sleep(CONFIRM_DELAY)
-    visible, address = probe(iface)
-    if not stranded(home_ssids, visible, address):
+    visible, address, linked = probe(iface)
+    if not stranded(home_ssids, visible, address, linked):
         log.info("%s came up on its own (address=%s); leaving it alone",
                  iface, address)
         return 0

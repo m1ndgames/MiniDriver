@@ -26,6 +26,7 @@ BSS aa:bb:cc:00:00:09(on wlan0)
 class FakeStation:
     def __init__(self, scan_text=""):
         self.scan_text = scan_text
+        self.linked = None          # SSID the link reports, None when down
         self.associated = []
         self.field_calls = 0
         self.teardown_calls = 0
@@ -38,6 +39,9 @@ class FakeStation:
 
     def associate(self, networks, country=None):
         self.associated.append((networks, country))
+
+    def link_ssid(self):
+        return self.linked
 
     def address(self):
         return "192.168.1.9"
@@ -110,6 +114,68 @@ class TestStopReleasesTheRadio:
         daemon.start()
         daemon.stop()
         assert station.teardown_calls == 1
+
+
+class TestFollowsTheBestNetwork:
+    """wpa_supplicant only weighs priorities when it associates, so a hotspot
+    appearing or vanishing afterwards leaves the box on the wrong network --
+    or on a dead link while a good one is in range. Neither changes which
+    SSIDs are *visible*, so the mode machine cannot see it."""
+
+    def daemon_at_home(self, tmp_path, linked, present):
+        station = FakeStation()
+        station.linked = linked
+        daemon = make_daemon(tmp_path, station,
+                             home=("iPhone von Florian", "localhost_2G"))
+        daemon._home_networks = [
+            {"ssid": "iPhone von Florian", "priority": 10},
+            {"ssid": "localhost_2G", "priority": 5},
+        ]
+        daemon.machine.present = set(present)
+        return daemon, station
+
+    def test_it_switches_to_a_higher_priority_network_that_appears(self, tmp_path):
+        daemon, station = self.daemon_at_home(
+            tmp_path, linked="localhost_2G",
+            present=["localhost_2G", "iPhone von Florian"])
+        assert daemon.keep_home(1000.0) is True
+        assert station.associated, "should have re-associated"
+
+    def test_it_returns_home_when_the_hotspot_disappears(self, tmp_path):
+        """The interface keeps its address, so nothing else notices."""
+        daemon, station = self.daemon_at_home(
+            tmp_path, linked=None, present=["localhost_2G"])
+        assert daemon.keep_home(1000.0) is True
+        assert station.associated
+
+    def test_it_leaves_a_correct_link_alone(self, tmp_path):
+        daemon, station = self.daemon_at_home(
+            tmp_path, linked="iPhone von Florian",
+            present=["localhost_2G", "iPhone von Florian"])
+        assert daemon.keep_home(1000.0) is False
+        assert not station.associated
+
+    def test_it_does_not_thrash_a_flapping_link(self, tmp_path):
+        """Associating tears the link down and back up; doing that every scan
+        would be worse than the problem."""
+        daemon, station = self.daemon_at_home(
+            tmp_path, linked=None, present=["localhost_2G"])
+        daemon._associated_at = 1000.0
+        assert daemon.keep_home(1001.0) is False
+        assert not station.associated
+
+    def test_nothing_in_range_is_not_its_business(self, tmp_path):
+        daemon, station = self.daemon_at_home(tmp_path, linked=None, present=[])
+        assert daemon.keep_home(1000.0) is False
+        assert not station.associated
+
+    def test_preferred_visible_picks_the_highest_priority_in_range(self, tmp_path):
+        daemon, _ = self.daemon_at_home(
+            tmp_path, linked=None,
+            present=["localhost_2G", "iPhone von Florian"])
+        assert daemon.preferred_visible() == "iPhone von Florian"
+        daemon.machine.present = {"localhost_2G"}
+        assert daemon.preferred_visible() == "localhost_2G"
 
 
 class TestPanelPages:

@@ -14,28 +14,42 @@ from minidriver import recover
 
 class TestStranded:
     def test_home_in_range_without_an_address_is_stranded(self):
-        assert recover.stranded(["home"], ["home", "neighbour"], None) is True
+        assert recover.stranded(["home"], ["home", "neighbour"], None, recover.DOWN) is True
 
     def test_home_in_range_with_an_address_is_working(self):
-        assert recover.stranded(["home"], ["home"], "192.168.1.42") is False
+        assert recover.stranded(["home"], ["home"], "192.168.1.42",
+                                "home") is False
+
+    def test_an_address_with_a_dead_link_is_still_stranded(self):
+        """When an access point vanishes the interface keeps its IP, so the box
+        looks healthy while nothing is reachable. A hotspot being switched off,
+        with home WiFi still in range, walked straight past the old check."""
+        assert recover.stranded(["home", "hotspot"], ["home"], "192.168.1.42",
+                                recover.DOWN) is True
+
+    def test_associated_elsewhere_still_counts_as_reachable(self):
+        """Being on a different network is not this check's business -- it only
+        cares that the box can be reached at all."""
+        assert recover.stranded(["home", "hotspot"], ["home"], "192.168.1.42",
+                                "hotspot") is False
 
     def test_home_out_of_range_is_just_the_field(self):
         """Mid-drive there is no home network and no address, and that is the
         normal working state -- recovering here would end every survey."""
-        assert recover.stranded(["home"], ["cafe", "bus"], None) is False
+        assert recover.stranded(["home"], ["cafe", "bus"], None, recover.DOWN) is False
 
     def test_an_address_away_from_home_is_left_alone(self):
-        assert recover.stranded(["home"], ["cafe"], "10.0.0.9") is False
+        assert recover.stranded(["home"], ["cafe"], "10.0.0.9", "cafe") is False
 
     def test_no_home_network_configured_is_stranded(self):
         """With nothing to come home to the daemon can never make the box
         reachable, so NetworkManager is the only way back in -- whatever is
         currently visible."""
-        assert recover.stranded([], ["cafe"], None) is True
-        assert recover.stranded(None, [], None) is True
+        assert recover.stranded([], ["cafe"], None, recover.DOWN) is True
+        assert recover.stranded(None, [], None, recover.DOWN) is True
 
     def test_no_home_configured_but_already_addressed_is_fine(self):
-        assert recover.stranded([], ["cafe"], "10.0.0.9") is False
+        assert recover.stranded([], ["cafe"], "10.0.0.9", "cafe") is False
 
 
 class TestReason:
