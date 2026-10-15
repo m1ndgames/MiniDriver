@@ -34,6 +34,12 @@ REASSOCIATE_GAP = 30.0
 # half minute forever. Each failure doubles the wait, up to this.
 REASSOCIATE_MAX_GAP = 900.0
 SERVICES = ("wigle", "wdgwars", "wardrift")
+# How often the field log says what the box is actually doing. A survey walk is
+# an hour or more of the box being alone with nobody reading the panel, and a
+# journal that says nothing for that hour cannot answer the one question that
+# matters afterwards: did we get anything? An 86-minute walk on 2026-10-15
+# produced no rows and 82 journal lines, all of them dhclient noise.
+HEARTBEAT_SECONDS = 120.0
 
 
 def build_status(mode, gps, aps, ble, rows, pending, last_upload, ip,
@@ -124,6 +130,12 @@ class Daemon:
         # CPython and safe; the loop notices it on its next tick.
         self._presses = 0
         self._presses_seen = 0
+        # None until the first beat, so the opening state of a survey is
+        # always on the record rather than two minutes of silence.
+        self._heartbeat_at = None
+        # None until the first GPS read, so a box that starts without a fix
+        # does not announce one as "lost".
+        self._had_fix = None
 
         self.page = ui.BLANK
         self._page_at = 0.0
@@ -326,6 +338,8 @@ class Daemon:
         now_mono = time.monotonic() if now_mono is None else now_mono
 
         self.gps = self._gps_read() or {}
+        self._log_fix_change()
+        self._heartbeat(now_mono)
         aps = wifi.parse_scan(self.station.scan(), now_wall)
         for ap in aps:
             self.aps[ap["mac"].lower()] = ap
@@ -344,6 +358,47 @@ class Daemon:
         else:
             # Already home: make sure we are on the best network in range.
             self.keep_home(now_mono)
+
+    def _log_fix_change(self) -> None:
+        """Say so the moment the position arrives or goes away.
+
+        A USB receiver can be knocked out of its socket mid-walk -- it happened
+        3m36s into the first real survey -- and without a fix every sighting is
+        discarded. This line is the difference between a walk that produced
+        nothing for a known reason and one that produced nothing for no reason
+        anybody can reconstruct afterwards.
+        """
+        now = has_fix(self.gps)
+        if now == self._had_fix:
+            return
+        if now:
+            log.info("gps fix acquired at %s, %s; sightings are being saved",
+                     self.gps.get("latitude"), self.gps.get("longitude"))
+        elif self._had_fix:
+            log.warning("gps fix LOST -- a sighting without a position cannot "
+                        "be written, so nothing will be saved until it returns")
+        self._had_fix = now
+
+    def _heartbeat(self, now_mono: float) -> None:
+        """Periodically record what the box is doing, so a survey leaves a trail.
+
+        The panel shows all of this live, but nobody is watching a panel while
+        walking, and the journal is the only account that survives the walk.
+        """
+        if (self._heartbeat_at is not None
+                and now_mono - self._heartbeat_at < HEARTBEAT_SECONDS):
+            return
+        self._heartbeat_at = now_mono
+        if has_fix(self.gps):
+            where = "fix %s, %s" % (self.gps.get("latitude"),
+                                    self.gps.get("longitude"))
+        else:
+            where = "NO GPS FIX, so nothing can be saved"
+        log.info("%s: seen %d wifi / %d ble, saved %d wifi / %d ble, "
+                 "%d rows written, %s", self.machine.mode, len(self.aps),
+                 len(self.ble.snapshot()) if self._ble_enabled else 0,
+                 len(self.saved_wifi), len(self.saved_ble),
+                 self.survey.rows if self.survey else 0, where)
 
     def _record(self, aps, now_wall, now_mono) -> None:
         if self.survey is None:

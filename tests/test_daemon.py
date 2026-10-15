@@ -3,6 +3,9 @@ upload sweep together. Threads and sleeps live in run(); the behaviour that
 matters -- what a field poll records, and what happens when home appears -- is
 driven here one poll at a time with fake collaborators.
 """
+import logging
+
+from minidriver import daemon as daemon_mod
 from minidriver.display import ui
 from minidriver.daemon import CAPTURE_NAME, Daemon, build_status
 from minidriver.statemachine import HOME, ModeMachine
@@ -347,3 +350,73 @@ class TestHomeSwitch:
         assert daemon.machine.mode != HOME
         assert daemon.survey.path != first_session    # a fresh capture file
         daemon.stop()
+
+
+class TestFieldTelemetry:
+    """A walk is the box alone for an hour with nobody reading the panel, so the
+    journal is the only account that survives it. The first real survey wrote no
+    rows because the GPS dongle fell out after 3m36s, and nothing in the log
+    said so -- 82 lines for 86 minutes, all of them dhclient noise."""
+
+    def test_losing_the_fix_is_logged_as_a_warning(self, tmp_path, caplog):
+        station = FakeStation()
+        daemon = make_daemon(tmp_path, station, home=("Nowhere",))
+        daemon.poll(now_wall=1.0, now_mono=1.0)          # starts with a fix
+        daemon._gps_read = lambda: {}
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            daemon.poll(now_wall=2.0, now_mono=2.0)
+        assert any("gps fix LOST" in r.message for r in caplog.records),             "a lost fix means nothing can be saved; it must not pass silently"
+
+    def test_starting_without_a_fix_does_not_claim_one_was_lost(self, tmp_path,
+                                                                caplog):
+        station = FakeStation()
+        daemon = make_daemon(tmp_path, station, home=("Nowhere",))
+        daemon._gps_read = lambda: {}
+        with caplog.at_level(logging.WARNING):
+            daemon.poll(now_wall=1.0, now_mono=1.0)
+        assert not any("LOST" in r.message for r in caplog.records)
+
+    def test_regaining_the_fix_is_logged(self, tmp_path, caplog):
+        station = FakeStation()
+        daemon = make_daemon(tmp_path, station, home=("Nowhere",))
+        daemon._gps_read = lambda: {}
+        daemon.poll(now_wall=1.0, now_mono=1.0)
+        daemon._gps_read = lambda: FIX
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            daemon.poll(now_wall=2.0, now_mono=2.0)
+        assert any("fix acquired" in r.message for r in caplog.records)
+
+    def test_the_heartbeat_reports_counts_and_the_missing_fix(self, tmp_path,
+                                                             caplog):
+        station = FakeStation()
+        daemon = make_daemon(tmp_path, station, home=("Nowhere",))
+        daemon._gps_read = lambda: {}
+        with caplog.at_level(logging.INFO):
+            daemon.poll(now_wall=1.0, now_mono=1.0)
+        beat = [r.message for r in caplog.records if "seen" in r.message]
+        assert beat, "the field log must say what the box is doing"
+        assert "NO GPS FIX" in beat[0]
+
+    def test_the_heartbeat_does_not_log_every_scan(self, tmp_path, caplog):
+        """Scans run every few seconds. One line per scan would bury the
+        journal and push the useful history out of its size cap."""
+        station = FakeStation()
+        daemon = make_daemon(tmp_path, station, home=("Nowhere",))
+        with caplog.at_level(logging.INFO):
+            daemon.poll(now_wall=1.0, now_mono=1.0)
+            daemon.poll(now_wall=2.0, now_mono=2.0)
+            daemon.poll(now_wall=3.0, now_mono=3.0)
+        beats = [r for r in caplog.records if "seen" in r.message]
+        assert len(beats) == 1
+
+    def test_the_heartbeat_returns_after_its_interval(self, tmp_path, caplog):
+        station = FakeStation()
+        daemon = make_daemon(tmp_path, station, home=("Nowhere",))
+        with caplog.at_level(logging.INFO):
+            daemon.poll(now_wall=1.0, now_mono=1.0)
+            daemon.poll(now_wall=2.0,
+                        now_mono=1.0 + daemon_mod.HEARTBEAT_SECONDS + 1)
+        beats = [r for r in caplog.records if "seen" in r.message]
+        assert len(beats) == 2
