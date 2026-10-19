@@ -194,6 +194,18 @@ def configure_gpsd():
     DEVICE, but multiple devices are attached". Hours went into blaming the
     dongle for that. So the UART is listed only when something is actually
     talking on it; USBAUTO picks up a dongle either way.
+
+    GPSD_OPTIONS carries -b (read-only) deliberately. Left to itself gpsd probes
+    the GPS HAT, decides it speaks u-blox, and switches it from NMEA into UBX
+    binary. That is normally an upgrade, but this HAT's module is a u-blox
+    *clone* that implements NAV-SOL and NAV-DOP and no satellite message at all
+    -- neither NAV-SVINFO nor NAV-SAT. In binary mode gpsd therefore never emits
+    a SKY report, so satellites seen/used are permanently 0 and the one check
+    that proves the antenna works is gone. Its NMEA, by contrast, carries GSV for
+    GPS and BeiDou. -b keeps the module in NMEA, which is why the panel can show
+    a satellite count at all. It also avoids a transient fake position
+    ($GPRMC,,V,3000.0000,N,11960.0000,E -- 119 deg 60 min is not a real
+    longitude) that the module emits while being switched.
     """
     defaults = Path("/etc/default/gpsd")
     devices = "/dev/serial0" if gps_on_serial0() else ""
@@ -205,7 +217,8 @@ def configure_gpsd():
         "# alongside a USB dongle makes gpsd report 0,0 for a working receiver.\n"
         f'DEVICES="{devices}"\n'
         'USBAUTO="true"\n'
-        'GPSD_OPTIONS="-n"\n'
+        '# -b: never write to the receiver. See configure_gpsd.\n'
+        'GPSD_OPTIONS="-n -b"\n'
         'START_DAEMON="true"\n')
     print(f"    wrote {defaults}")
     if shutil.which("systemctl"):
