@@ -75,14 +75,28 @@ def activity_text(status: dict) -> str:
     return str((status or {}).get("activity") or "idle")
 
 
+PANEL_WIDTH = 250
+LINE_HEIGHT = 16
+# DejaVu Sans Mono at 14px. Measured per string at draw time; this is the
+# estimate the column budget is built from.
+CHAR_WIDTH = 8.4
+# The case sits slightly proud of the panel and covers its left edge, so the
+# page is shifted right by two characters' worth of pixels. Shifting the origin
+# beats prefixing spaces: the indent stays out of the line contents, where it
+# would double the WiFi line's own leading spaces and eat the budget unseen.
+INDENT_COLUMNS = 2
+MARGIN = 4 + round(INDENT_COLUMNS * CHAR_WIDTH)
+# Derived, never written down twice: a hand-kept column count drifts from the
+# margin it depends on. 122px from y=2 at LINE_HEIGHT leaves seven lines
+# before the panel clips the eighth.
+PANEL_COLUMNS = int((PANEL_WIDTH - MARGIN) / CHAR_WIDTH)
+PANEL_LINES = 7
+
+
 BLANK, STATUS = "blank", "status"
 # There is one content page. Blank is not a resting page but the off state: the
 # button toggles the panel white and back, and nothing else blanks it.
 TOGGLE_PAGE = {STATUS: BLANK, BLANK: STATUS}
-# 250px at 14px DejaVu Sans Mono is about 29 columns, and 122px from y=2 at
-# LINE_HEIGHT leaves seven lines before the panel clips the eighth.
-PANEL_COLUMNS = 29
-PANEL_LINES = 7
 
 
 def wifi_link_lines(status: dict) -> list:
@@ -93,7 +107,8 @@ def wifi_link_lines(status: dict) -> list:
     ssid = status.get("ssid") or "?"
     rssi = status.get("rssi")
     signal = f" {rssi}dBm" if rssi is not None else ""
-    return [f"WiFi: {ssid}"[:29], f"  {status.get('ip') or '...'}{signal}"[:29]]
+    return [f"WiFi: {ssid}"[:PANEL_COLUMNS],
+            f"  {status.get('ip') or '...'}{signal}"[:PANEL_COLUMNS]]
 
 
 def power_line(status: dict) -> str:
@@ -120,14 +135,17 @@ def wifi_seen_line(status: dict) -> str:
     """What the radio found, and how much of it was keepable.
 
     Seen and saved both, because nothing is written without a GPS fix:
-    "42 wifi (0 saved)" says the radio is fine and the GPS is not. Named "seen"
+    "42 wifi, 0 saved" says the radio is fine and the GPS is not. Named "seen"
     rather than "WIFI" so it cannot be misread as the link line above it.
     """
     status = status or {}
-    # Comma, not parentheses: "seen: 99999 wifi (99999 saved)" is one column
-    # too wide for the panel, and the comma form lands on exactly 29.
-    return (f"seen: {status.get('wifi_aps', 0)} wifi, "
-            f"{status.get('wifi_saved', 0)} saved")
+    found, saved = status.get("wifi_aps", 0), status.get("wifi_saved", 0)
+    spelled = f"seen: {found} wifi, {saved} saved"
+    if len(spelled) <= PANEL_COLUMNS:
+        return spelled
+    # Implausible counts only. seen/saved in that order, because the label
+    # says seen and the bigger number comes first.
+    return f"seen: {found}/{saved} wifi"
 
 
 def status_page(status: dict) -> list:
@@ -148,10 +166,6 @@ def page_lines(status: dict) -> list:
     if (status or {}).get("page", BLANK) == STATUS:
         return status_page(status)
     return []
-
-
-LINE_HEIGHT = 16
-MARGIN = 4
 
 
 class Display:
@@ -199,7 +213,7 @@ class Display:
         except Exception:                                  # noqa: BLE001
             # Pillow too old for textlength: the font is monospace, so an
             # estimate is close enough to keep the text on the panel.
-            return len(text) * 8.4
+            return len(text) * CHAR_WIDTH
 
     def _compose(self, status: dict):
         from PIL import Image, ImageDraw

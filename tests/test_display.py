@@ -22,8 +22,9 @@ from minidriver.display import ui
 from minidriver.display.ui import (BackgroundDisplay, activity_text,
                                    battery_text, connection_text, gps_text)
 
-# 250px at 14px DejaVu Sans Mono is about 29 characters.
-PANEL_COLUMNS = 29
+# 250px at 14px DejaVu Sans Mono is about 29 characters, less the two-column
+# indent the case needs: the plastic covers the panel's left edge.
+PANEL_COLUMNS = 27
 # 122px tall from y=2 at LINE_HEIGHT 16 leaves room for seven lines; an eighth
 # is clipped by the panel, so the single page has a hard line budget.
 PANEL_LINES = 7
@@ -114,12 +115,16 @@ class TestGpsLine:
                            "sats_seen": 20})
         assert len(gps_text(wide)) <= PANEL_COLUMNS
 
-    def test_a_fix_carries_position_quality_and_satellites_on_one_line(self):
+    def test_a_fix_carries_position_and_quality_on_one_line(self):
         """Two GPS lines collapsed into one. The second said "3D 7/11" plus the
         GPS clock, and with a fix showing it duplicated what the position had
-        already proven; without one it just repeated the search counts."""
+        already proven; without one it just repeated the search counts.
+
+        The satellite counts no longer fit: "GPS: 51.2345, 6.7654 3D 7/11" is
+        28 columns and the case's indent left 27, so they are the first thing
+        the line gives up."""
         line = gps_text(status())
-        assert line == "GPS: 51.2345, 6.7654 3D 7/11"
+        assert line == "GPS: 51.2345, 6.7654 3D"
         assert len(line) <= PANEL_COLUMNS
 
     def test_a_two_dimensional_fix_says_so(self):
@@ -136,6 +141,23 @@ class TestGpsLine:
 
     def test_satellites_text_is_gone_with_its_second_line(self):
         assert not hasattr(ui, "satellites_text")
+
+
+class TestLayout:
+    def test_the_text_starts_two_columns_in_for_the_case(self):
+        """The case sits slightly proud of the panel and hides its left edge,
+        so the whole page is shifted right by two characters' worth of pixels.
+        Shifting the origin rather than prefixing spaces keeps the indent out
+        of the line contents, where it would have doubled the WiFi line's own
+        leading spaces and eaten the column budget invisibly."""
+        assert ui.INDENT_COLUMNS == 2
+        assert ui.MARGIN == 4 + round(2 * ui.CHAR_WIDTH)
+
+    def test_the_column_budget_follows_the_indent(self):
+        """29 columns minus the indent. Derived, not written down twice: a
+        hand-kept number drifts from the margin it depends on."""
+        assert ui.PANEL_COLUMNS == PANEL_COLUMNS
+        assert ui.PANEL_COLUMNS == int((250 - ui.MARGIN) / ui.CHAR_WIDTH)
 
 
 class TestPages:
