@@ -4,13 +4,17 @@ The 2.13" panel is 250x122, monochrome and has no buttons, so the UI is
 output-only. PIL and the Waveshare driver are hardware; what is tested is how a
 status snapshot becomes the text that goes on the panel.
 
+There is one content page and nothing else. The button blanks the panel to
+white and brings it back; it no longer cycles through pages.
+
 Layout:
 
-    not connected                75%
-    WIFI: 42
-    BLE: 5
-    GPS: 51.2345, 6.7654
     Status: scanning
+    GPS: 51.2345, 6.7654 3D 7/11
+    WiFi: localhost_2G
+      192.168.178.43 -52dBm
+    seen: 42 wifi, 18 saved
+    Batt: 3.72V 38%
 """
 import threading
 
@@ -20,6 +24,9 @@ from minidriver.display.ui import (BackgroundDisplay, activity_text,
 
 # 250px at 14px DejaVu Sans Mono is about 29 characters.
 PANEL_COLUMNS = 29
+# 122px tall from y=2 at LINE_HEIGHT 16 leaves room for seven lines; an eighth
+# is clipped by the panel, so the single page has a hard line budget.
+PANEL_LINES = 7
 
 
 def status(**over):
@@ -62,7 +69,7 @@ class TestHeader:
 
 class TestGpsLine:
     def test_shows_the_position_when_there_is_a_fix(self):
-        assert gps_text(status()) == "GPS: 51.2345, 6.7654"
+        assert gps_text(status()).startswith("GPS: 51.2345, 6.7654")
 
     def test_shows_search_progress_instead_of_a_bare_no_fix(self):
         """Satellite counts answer the real question during a cold start: is
@@ -92,50 +99,86 @@ class TestGpsLine:
                                     "sats_seen": 4, "sats_used": 0})
                         ) == "GPS: searching 0/4"
 
+    def test_a_wide_position_gives_up_the_satellites_before_the_panel(self):
+        """"GPS: -33.8688, -151.2093 3D 12/20" is 33 characters. The position
+        is the line's reason to exist, so the counts drop first and the fix
+        quality after them, rather than the text running off the panel."""
+        wide = status(gps={"fix": True, "mode": 3, "latitude": -33.8688,
+                           "longitude": -151.2093, "sats_used": 12,
+                           "sats_seen": 20})
+        assert gps_text(wide) == "GPS: -33.8688, -151.2093 3D"
+
     def test_southern_and_western_positions_still_fit(self):
         wide = status(gps={"fix": True, "mode": 3, "latitude": -33.8688,
-                           "longitude": -151.2093})
+                           "longitude": -151.2093, "sats_used": 12,
+                           "sats_seen": 20})
         assert len(gps_text(wide)) <= PANEL_COLUMNS
+
+    def test_a_fix_carries_position_quality_and_satellites_on_one_line(self):
+        """Two GPS lines collapsed into one. The second said "3D 7/11" plus the
+        GPS clock, and with a fix showing it duplicated what the position had
+        already proven; without one it just repeated the search counts."""
+        line = gps_text(status())
+        assert line == "GPS: 51.2345, 6.7654 3D 7/11"
+        assert len(line) <= PANEL_COLUMNS
+
+    def test_a_two_dimensional_fix_says_so(self):
+        assert "2D" in gps_text(status(gps={
+            "fix": True, "mode": 2, "latitude": 51.2345, "longitude": 6.7654,
+            "sats_used": 4, "sats_seen": 9}))
+
+    def test_searching_reports_the_climb_from_seen_to_used(self):
+        assert gps_text(status(gps={"fix": False, "sats_used": 0,
+                                    "sats_seen": 12})) == "GPS: searching 0/12"
+
+    def test_nothing_heard_at_all_is_said_plainly(self):
+        assert gps_text(status(gps={})) == "GPS: no signal"
+
+    def test_satellites_text_is_gone_with_its_second_line(self):
+        assert not hasattr(ui, "satellites_text")
 
 
 class TestPages:
-    def test_the_resting_page_draws_nothing(self):
-        """Page one is blank on purpose: a dark panel costs no refreshes and
-        makes it obvious the box is not being looked at."""
+    def test_the_blank_page_draws_nothing(self):
+        """Blank is white: the button's off state, not a resting page."""
         assert ui.page_lines(status(page=ui.BLANK)) == []
 
-    def test_the_button_toggles_the_two_content_pages(self):
-        assert ui.NEXT_PAGE[ui.BLANK] == ui.STATUS
-        assert ui.NEXT_PAGE[ui.STATUS] == ui.SCANNING
-        assert ui.NEXT_PAGE[ui.SCANNING] == ui.STATUS
+    def test_the_button_toggles_the_page_against_blank(self):
+        assert ui.TOGGLE_PAGE[ui.STATUS] == ui.BLANK
+        assert ui.TOGGLE_PAGE[ui.BLANK] == ui.STATUS
 
-    def test_status_page_carries_the_four_subsystems(self):
+    def test_there_is_no_scanning_page_any_more(self):
+        assert not hasattr(ui, "SCANNING")
+        assert not hasattr(ui, "scanning_page")
+
+    def test_the_status_page_carries_everything_that_survived(self):
         lines = "\n".join(ui.page_lines(status(
             page=ui.STATUS, connected=True, ssid="localhost_2G", rssi=-52,
-            ip="192.168.178.43", runtime="2h10",
+            ip="192.168.178.43", wifi_aps=42, wifi_saved=18,
             battery={"percent": 38, "volts": 3.72})))
-        assert "Status:" in lines                       # what it is doing
-        assert "GPS:" in lines                          # position or search
+        assert "Status:" in lines                        # what it is doing
+        assert "GPS:" in lines                           # position or search
         assert "localhost_2G" in lines and "192.168.178.43" in lines
-        assert "3.72V" in lines and "38%" in lines and "2h10" in lines
+        assert "seen: 42 wifi, 18 saved" in lines       # wifi finds
+        assert "3.72V" in lines and "38%" in lines       # battery, measured
 
-    def test_scanning_page_carries_counts_and_the_upload_backlog(self):
+    def test_the_status_page_drops_ble_and_the_upload_backlog(self):
+        """Both lost their place to the battery line: seven lines is the lot."""
         lines = "\n".join(ui.page_lines(status(
-            page=ui.SCANNING, wifi_aps=42, wifi_saved=18,
-            ble_devices=5, ble_saved=2, rows=318,
+            page=ui.STATUS, ble_devices=5, ble_saved=2,
             pending={"wigle": 2, "wdgwars": 1})))
-        assert "WIFI: 42 (18 saved)" in lines
-        assert "BLE: 5 (2 saved)" in lines
-        assert "to upload: 3" in lines
+        assert "BLE" not in lines
+        assert "upload" not in lines
 
-    def test_every_page_fits_the_panel(self):
+    def test_the_page_fits_the_panel(self):
         wide = status(page=ui.STATUS, connected=True,
                       ssid="a-very-long-network-name-indeed", rssi=-100,
-                      ip="192.168.178.200", runtime="12h59",
+                      ip="192.168.178.200", wifi_aps=99999, wifi_saved=99999,
                       battery={"percent": 100, "volts": 4.20})
-        for page in (ui.BLANK, ui.STATUS, ui.SCANNING):
+        for page in (ui.BLANK, ui.STATUS):
             wide["page"] = page
             lines = ui.page_lines(wide)
+            assert len(lines) <= PANEL_LINES, f"{page}: {len(lines)} lines"
             assert 2 + len(lines) * 16 <= 122, f"{page} too tall"
             for line in lines:
                 assert len(line) <= PANEL_COLUMNS, f"{page}: {line!r}"
@@ -166,14 +209,13 @@ class TestActivityAndSparseStatus:
 
     def test_pages_survive_a_sparse_status(self):
         """A status taken before the first scan must still render."""
-        for page in (ui.BLANK, ui.STATUS, ui.SCANNING):
+        for page in (ui.BLANK, ui.STATUS):
             assert isinstance(ui.page_lines({"page": page}), list)
-        assert "WIFI: 0 (0 saved)" in ui.page_lines({"page": ui.SCANNING})
+        assert "seen: 0 wifi, 0 saved" in ui.page_lines({"page": ui.STATUS})
 
     def test_counts_fit_the_panel_at_implausible_scale(self):
-        lines = ui.page_lines(status(page=ui.SCANNING, wifi_aps=99999,
-                                     wifi_saved=99999, ble_devices=99999,
-                                     ble_saved=99999, rows=999999))
+        lines = ui.page_lines(status(page=ui.STATUS, wifi_aps=99999,
+                                     wifi_saved=99999))
         for line in lines:
             assert len(line) <= PANEL_COLUMNS
 

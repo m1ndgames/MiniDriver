@@ -123,8 +123,8 @@ class Daemon:
         self._associated_at = 0.0
         self._assoc_failures = 0
         self._stop = threading.Event()
-        # Button presses are counted, not signalled through an Event. next_page
-        # runs in a signal handler on the main thread, and threading primitives
+        # Button presses are counted, not signalled through an Event.
+        # button_pressed runs in a signal handler on the main thread, and threading primitives
         # take locks the main thread may already hold -- setting an Event from
         # there can deadlock the process. A plain integer bump is atomic under
         # CPython and safe; the loop notices it on its next tick.
@@ -137,10 +137,9 @@ class Daemon:
         # does not announce one as "lost".
         self._had_fix = None
 
-        self.page = ui.BLANK
-        self._page_at = 0.0
-        self._page_timeout = float(cfg.get("display", {})
-                                   .get("page_timeout_seconds", 15.0))
+        # The panel is on in the normal state. Blank is the off state the
+        # button chooses, so nothing here blanks it on a timer.
+        self.page = ui.STATUS
         self._runtime = battery_mod.RuntimeEstimate()
 
     # ---------------------------------------------------------------- lifecycle
@@ -264,7 +263,7 @@ class Daemon:
             self._activity = None
 
     # --------------------------------------------------------------- display
-    def next_page(self) -> None:
+    def button_pressed(self) -> None:
         """Record a button press.
 
         Runs inside a signal handler, so it does the least possible: no locks,
@@ -274,24 +273,13 @@ class Daemon:
         self._presses += 1
 
     def apply_presses(self, now_mono: float) -> bool:
-        """Advance the page if the button was pressed since the last tick."""
+        """Toggle the panel between its page and white, once per press."""
         if self._presses == self._presses_seen:
             return False
         self._presses_seen = self._presses
-        self.page = ui.NEXT_PAGE.get(self.page, ui.STATUS)
-        self._page_at = now_mono
-        log.info("button: panel page -> %s", self.page)
-        return True
-
-    def _expire_page(self, now_mono: float) -> bool:
-        """Drop back to the resting page after the configured idle time."""
-        if self.page == ui.BLANK or self._page_timeout <= 0:
-            return False
-        if now_mono - self._page_at < self._page_timeout:
-            return False
-        self.page = ui.BLANK
-        log.info("panel idle for %.0fs; back to the blank page",
-                 self._page_timeout)
+        self.page = ui.TOGGLE_PAGE.get(self.page, ui.STATUS)
+        log.info("button: panel -> %s",
+                 "blank" if self.page == ui.BLANK else "status")
         return True
 
     def _refresh_panel(self) -> None:
@@ -467,11 +455,9 @@ class Daemon:
             while not self._stop.is_set():
                 self.poll()
                 now = time.monotonic()
-                # The page can change between ticks, from the button or from
-                # the idle timeout, and either has to redraw now rather than
-                # wait out the refresh cadence.
+                # The button can change the page between ticks, and that has
+                # to redraw now rather than wait out the refresh cadence.
                 self.apply_presses(now)
-                self._expire_page(now)
                 page_changed = self.page != last_page
                 if self.display is not None and (
                         page_changed or now - last_draw >= refresh_gap):

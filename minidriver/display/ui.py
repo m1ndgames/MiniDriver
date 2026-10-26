@@ -35,7 +35,7 @@ def battery_text(status: dict) -> str:
 
 
 def gps_text(status: dict) -> str:
-    """The position when there is a fix, otherwise the search progress.
+    """The whole GPS story in one line: position, fix quality, satellites.
 
     The position is the one number worth reading off the panel mid-drive, and it
     doubles as proof the survey is recording, since nothing is written without a
@@ -43,36 +43,46 @@ def gps_text(status: dict) -> str:
     "is this getting anywhere, or is the antenna blind?" -- which a bare
     "no fix" does not. A cold start can take minutes, so watching used climb
     towards seen is the difference between waiting and giving up.
+
+    This used to be two lines, the second carrying quality, counts and the GPS
+    clock. With a fix that repeated what the position had already proven; with
+    none it repeated the search counts. One line says it once.
     """
     gps = (status or {}).get("gps") or {}
     latitude, longitude = gps.get("latitude"), gps.get("longitude")
-    if gps.get("fix") and latitude is not None and longitude is not None:
-        # Four decimals is about 11m: finer would not fit and would not be read.
-        return f"GPS: {latitude:.4f}, {longitude:.4f}"
-    seen = gps.get("sats_seen") or 0
-    if not seen:
-        # Nothing heard at all: no antenna, no sky, or no gpsd.
-        return "GPS: no signal"
-    return f"GPS: searching {gps.get('sats_used') or 0}/{seen}"
+    if not (gps.get("fix") and latitude is not None and longitude is not None):
+        seen = gps.get("sats_seen") or 0
+        if not seen:
+            # Nothing heard at all: no antenna, no sky, or no gpsd.
+            return "GPS: no signal"
+        return f"GPS: searching {gps.get('sats_used') or 0}/{seen}"
+
+    # Four decimals is about 11m: finer would not fit and would not be read.
+    line = f"GPS: {latitude:.4f}, {longitude:.4f}"
+    quality = {2: "2D", 3: "3D"}.get(gps.get("mode"))
+    # Longest first, and the position is never what gives way: a southern,
+    # western fix spends 24 of the 29 columns on its own, so the counts go
+    # before the quality, and both before the text runs off the panel.
+    for suffix in (f" {quality} {gps.get('sats_used') or 0}/"
+                   f"{gps.get('sats_seen') or 0}",
+                   f" {quality}"):
+        if quality and len(line + suffix) <= PANEL_COLUMNS:
+            return line + suffix
+    return line
 
 
 def activity_text(status: dict) -> str:
     return str((status or {}).get("activity") or "idle")
 
 
-BLANK, STATUS, SCANNING = "blank", "status", "scanning"
-# Blank is the resting page. Once woken, the button toggles the two content
-# pages; the inactivity timeout drops back to blank from wherever you are.
-NEXT_PAGE = {BLANK: STATUS, STATUS: SCANNING, SCANNING: STATUS}
-
-
-def satellites_text(status: dict) -> str:
-    """Fix quality, satellites and GPS time -- the detail page's GPS line."""
-    gps = (status or {}).get("gps") or {}
-    quality = {2: "2D", 3: "3D"}.get(gps.get("mode"), "--")
-    line = f"{quality} {gps.get('sats_used', 0)}/{gps.get('sats_seen', 0)}"
-    when = gps.get("time")
-    return f"{line}  {when}" if when else line
+BLANK, STATUS = "blank", "status"
+# There is one content page. Blank is not a resting page but the off state: the
+# button toggles the panel white and back, and nothing else blanks it.
+TOGGLE_PAGE = {STATUS: BLANK, BLANK: STATUS}
+# 250px at 14px DejaVu Sans Mono is about 29 columns, and 122px from y=2 at
+# LINE_HEIGHT leaves seven lines before the panel clips the eighth.
+PANEL_COLUMNS = 29
+PANEL_LINES = 7
 
 
 def wifi_link_lines(status: dict) -> list:
@@ -106,40 +116,37 @@ def power_line(status: dict) -> str:
     return "Batt: " + " ".join(p for p in parts if p)
 
 
+def wifi_seen_line(status: dict) -> str:
+    """What the radio found, and how much of it was keepable.
+
+    Seen and saved both, because nothing is written without a GPS fix:
+    "42 wifi (0 saved)" says the radio is fine and the GPS is not. Named "seen"
+    rather than "WIFI" so it cannot be misread as the link line above it.
+    """
+    status = status or {}
+    # Comma, not parentheses: "seen: 99999 wifi (99999 saved)" is one column
+    # too wide for the panel, and the comma form lands on exactly 29.
+    return (f"seen: {status.get('wifi_aps', 0)} wifi, "
+            f"{status.get('wifi_saved', 0)} saved")
+
+
 def status_page(status: dict) -> list:
-    """Page 2: what the box is doing, and the state of its three subsystems."""
+    """The one page: what the box is doing, where it is, and what it is on.
+
+    Six lines of the seven the panel holds. BLE counts and the upload backlog
+    used to share a second page and lost their place to the battery line, which
+    matters more on a box that runs off a UPS.
+    """
     status = status or {}
-    return ([f"Status: {activity_text(status)}",
-             gps_text(status),
-             f"  {satellites_text(status)}"]
+    return ([f"Status: {activity_text(status)}", gps_text(status)]
             + wifi_link_lines(status)
-            + [power_line(status)])
-
-
-def scanning_page(status: dict) -> list:
-    """Page 3: what the survey has collected and what is waiting to go out."""
-    status = status or {}
-    pending = status.get("pending") or {}
-    waiting = sum(int(v or 0) for v in pending.values())
-    return [
-        "Scanning",
-        "",
-        # Seen and saved both, because nothing is written without a GPS fix:
-        # "42 (0 saved)" says the radio is fine and the GPS is not.
-        f"WIFI: {status.get('wifi_aps', 0)} ({status.get('wifi_saved', 0)} saved)",
-        f"BLE: {status.get('ble_devices', 0)} ({status.get('ble_saved', 0)} saved)",
-        f"rows: {status.get('rows', 0)}",
-        f"to upload: {waiting}",
-    ]
+            + [wifi_seen_line(status), power_line(status)])
 
 
 def page_lines(status: dict) -> list:
-    """The lines for whichever page is showing. Blank draws nothing at all."""
-    page = (status or {}).get("page", BLANK)
-    if page == STATUS:
+    """The lines for the page showing. Blank draws nothing, which is white."""
+    if (status or {}).get("page", BLANK) == STATUS:
         return status_page(status)
-    if page == SCANNING:
-        return scanning_page(status)
     return []
 
 

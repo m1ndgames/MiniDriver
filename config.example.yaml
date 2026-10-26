@@ -77,13 +77,11 @@ display:
   # Seconds between panel redraws. E-paper wears with every refresh, so status is
   # redrawn on a cadence rather than on every change.
   refresh_seconds: 30.0
-  # Seconds of no button press before the panel returns to its blank resting
-  # page. 0 keeps the current page up indefinitely.
   #
-  # The panel starts blank; a button press cycles Status -> Scanning -> Status.
+  # The panel is on by default and shows one status page; a button press
+  # toggles it to white and back, and nothing blanks it on a timer.
   # Wire the PiSugar single-tap shell (web UI, port 8421) to:
-  #     systemctl kill -s USR1 minidriver.service
-  page_timeout_seconds: 15.0
+  #     systemctl kill -s USR1 --kill-whom=main minidriver.service
 
 paths:
   data_dir: /var/lib/minidriver

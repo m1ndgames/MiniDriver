@@ -209,50 +209,41 @@ class TestFollowsTheBestNetwork:
 class TestPanelPages:
     def press(self, daemon, at=0.0):
         """A button press, then the loop tick that acts on it."""
-        daemon.next_page()
+        daemon.button_pressed()
         daemon.apply_presses(at)
 
-    def test_the_button_cycles_blank_status_scanning_status(self, tmp_path):
+    def test_the_panel_starts_showing_the_status_page(self, tmp_path):
+        """The panel is on in the normal state. Blank is now the off state the
+        button chooses, not where the box rests."""
         daemon = make_daemon(tmp_path, FakeStation())
-        assert daemon.page == ui.BLANK          # rests blank at start
+        assert daemon.page == ui.STATUS
+
+    def test_the_button_toggles_the_page_off_and_on(self, tmp_path):
+        daemon = make_daemon(tmp_path, FakeStation())
+        self.press(daemon); assert daemon.page == ui.BLANK
         self.press(daemon); assert daemon.page == ui.STATUS
-        self.press(daemon); assert daemon.page == ui.SCANNING
-        self.press(daemon); assert daemon.page == ui.STATUS
+        self.press(daemon); assert daemon.page == ui.BLANK
 
     def test_the_handler_itself_touches_no_locks(self, tmp_path):
-        """next_page runs in a signal handler on the main thread. Taking a lock
+        """button_pressed runs in a signal handler on the main thread. Taking a lock
         there can deadlock against the loop holding it, so the handler only
         bumps a counter and the loop does the work."""
         daemon = make_daemon(tmp_path, FakeStation())
-        daemon.next_page()
-        assert daemon.page == ui.BLANK          # nothing changed yet
+        daemon.button_pressed()
+        assert daemon.page == ui.STATUS         # nothing changed yet
         assert daemon.apply_presses(0.0) is True
-        assert daemon.page == ui.STATUS
+        assert daemon.page == ui.BLANK
         assert daemon.apply_presses(0.0) is False   # no press, no redraw
 
-    def test_it_returns_to_blank_after_the_timeout(self, tmp_path):
+    def test_the_page_never_expires_on_its_own(self, tmp_path):
+        """The idle timeout is gone with the resting page: an on panel that
+        blanked itself after fifteen seconds would contradict the normal state,
+        so only the button turns it off."""
         daemon = make_daemon(tmp_path, FakeStation())
-        daemon._page_timeout = 15.0
-        self.press(daemon)
-        daemon._page_at = 100.0
-        assert daemon._expire_page(110.0) is False      # still within 15s
-        assert daemon.page == ui.STATUS
-        assert daemon._expire_page(116.0) is True       # past it
-        assert daemon.page == ui.BLANK
-
-    def test_an_already_blank_panel_does_not_keep_redrawing(self, tmp_path):
-        """Expiring an expired page would mark the panel dirty every tick and
-        burn a refresh each time, which e-paper does not forgive."""
-        daemon = make_daemon(tmp_path, FakeStation())
-        assert daemon._expire_page(10_000.0) is False
-
-    def test_a_zero_timeout_keeps_the_page_up(self, tmp_path):
-        daemon = make_daemon(tmp_path, FakeStation())
-        daemon._page_timeout = 0
-        self.press(daemon)
-        assert daemon._expire_page(10_000.0) is False
-        assert daemon.page == ui.STATUS
-
+        assert not hasattr(daemon, "_expire_page")
+        assert not hasattr(daemon, "_page_timeout")
+        self.press(daemon); assert daemon.page == ui.BLANK
+        assert daemon.page == ui.BLANK          # and it stays off
 
 
 class TestBuildStatus:

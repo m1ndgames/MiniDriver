@@ -76,9 +76,6 @@ DEFAULTS: dict = {
         # partial refresh takes time, so status is redrawn on a cadence rather
         # than on every change.
         "refresh_seconds": 30.0,
-        # Seconds of no button press before the panel returns to its blank
-        # resting page. 0 keeps whatever page is showing indefinitely.
-        "page_timeout_seconds": 15.0,
     },
     "paths": {
         "data_dir": "/var/lib/minidriver",
